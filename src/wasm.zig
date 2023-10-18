@@ -7,7 +7,7 @@ pub const Val = union(std.wasm.Valtype) {
     i64: i64,
     f32: f32,
     f64: f64,
-    v128: @Vector(16, u8),
+    v128: @Vector(128 / 8, u8),
 };
 
 pub fn span(memory: []u8, addr_val: anytype) []u8 {
@@ -17,8 +17,5 @@ pub fn span(memory: []u8, addr_val: anytype) []u8 {
         u32 => addr_val,
         else => |T| @compileError("unsupported type for address: " ++ @typeName(T)),
     };
-    return std.mem.span(@as(
-        [*c]u8,
-        &memory[addr],
-    ));
+    return std.mem.span(@as([*c]u8, &memory[a]));
 }
