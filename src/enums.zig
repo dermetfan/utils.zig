@@ -45,7 +45,7 @@ pub fn Merged(comptime enums: []const type) type {
 test Merged {
     {
         const E = Merged(&.{
-            enum{ a, b },
+            enum { a, b },
             enum(u3) { c = 2, d, e, f },
         });
         const info = @typeInfo(E).Enum;
