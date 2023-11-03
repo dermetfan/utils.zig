@@ -119,3 +119,126 @@ test concatTuples {
     try std.testing.expectEqual(4, result.@"3");
     try std.testing.expectEqual(5, result.@"4");
 }
+
+pub fn OptionalChild(comptime T: type) ?type {
+    return switch (@typeInfo(T)) {
+        .Array, .Vector, .Pointer, .Optional => std.meta.Child(T),
+        else => null,
+    };
+}
+
+pub fn DropUfcsParam(comptime T: type) type {
+    var fn_info = @typeInfo(T).Fn;
+    fn_info.params = fn_info.params[1..];
+    return @Type(.{ .Fn = fn_info });
+}
+
+pub fn Closure(comptime Fn: type, comptime mutable: bool) type {
+    const fn_info = @typeInfo(Fn).Fn;
+    return union(enum) {
+        stateful: Stateful,
+        stateless: Stateless,
+
+        const Self = @This();
+
+        pub const Stateful = struct {
+            state_fn: *const OpaqueStateFn,
+            state: OpaqueStatePtr,
+
+            pub const OpaqueStatePtr = if (mutable) *anyopaque else *const anyopaque;
+
+            pub const OpaqueStateFn = @Type(.{ .Fn = blk: {
+                var info = fn_info;
+                info.params = .{.{
+                    .type = OpaqueStatePtr,
+                    .is_generic = false,
+                    .is_noalias = false,
+                }} ++ info.params;
+                break :blk info;
+            } });
+
+            pub fn init(comptime state_fn: anytype, state: anytype) @This() {
+                const StateFn = @TypeOf(state_fn);
+                const state_fn_info = @typeInfo(StateFn).Fn;
+                const bad_fn_msg = "cannot safely cast " ++ @typeName(StateFn) ++ " to " ++ @typeName(OpaqueStateFn);
+                const State = std.meta.Child(@TypeOf(state));
+                const StatePtr = if (mutable) *State else *const State;
+
+                if (state_fn_info.params[0].type.? != StatePtr) @compileError(bad_fn_msg);
+                inline for (state_fn_info.params[1..], fn_info.params) |state_fn_param, fn_param|
+                    if (state_fn_param.type != fn_param.type) @compileError(bad_fn_msg);
+                if (state_fn_info.return_type != fn_info.return_type) @compileError(bad_fn_msg);
+
+                return .{
+                    .state_fn = @ptrCast(&state_fn),
+                    .state = state,
+                };
+            }
+        };
+
+        pub const Stateless = *const Fn;
+
+        pub fn stateful(comptime state_fn: anytype, state: anytype) Self {
+            return .{ .stateful = Stateful.init(state_fn, state) };
+        }
+
+        pub fn stateless(comptime func: anytype) Self {
+            return .{ .stateless = func };
+        }
+
+        pub fn call(self: Self, args: anytype) fn_info.return_type.? {
+            return switch (self) {
+                .stateful => |sf| @call(.auto, sf.state_fn, .{sf.state} ++ args),
+                .stateless => |func| @call(.auto, func, args),
+            };
+        }
+    };
+}
+
+const TestClosureState = struct {
+    count: usize = 0,
+
+    pub fn call(self: *@This(), n: usize) usize {
+        self.count += n;
+        return self.count;
+    }
+
+    pub fn tests(self: *const @This(), closed: Closure(DropUfcsParam(@TypeOf(call)), true)) !void {
+        for (1..3) |i| {
+            try std.testing.expectEqual(@as(usize, i), closed.call(.{1}));
+            try std.testing.expectEqual(@as(usize, i), self.count);
+        }
+    }
+};
+
+test Closure {
+    var state = TestClosureState{};
+    try state.tests(Closure(fn (usize) usize, true).stateful(TestClosureState.call, &state));
+
+    try std.testing.expectEqual(@as(usize, 5), Closure(fn () usize, false).stateless(struct {
+        fn call() usize {
+            return 5;
+        }
+    }.call).call(.{}));
+}
+
+pub fn closure(state_fn: anytype, state: anytype) Closure(DropUfcsParam(@TypeOf(state_fn)), !std.meta.trait.isConstPtr(@TypeOf(state))) {
+    return Closure(DropUfcsParam(@TypeOf(state_fn)), !std.meta.trait.isConstPtr(@TypeOf(state))).stateful(state_fn, state);
+}
+
+pub fn disclosure(func: anytype, comptime mutable: bool) Closure(@TypeOf(func), mutable) {
+    return Closure(@TypeOf(func), mutable).stateless(func);
+}
+
+test closure {
+    var state = TestClosureState{};
+    try state.tests(closure(TestClosureState.call, &state));
+}
+
+test disclosure {
+    try std.testing.expectEqual(@as(usize, 2), disclosure(struct {
+        fn call(foo: usize) usize {
+            return foo + 1;
+        }
+    }.call, false).call(.{1}));
+}
