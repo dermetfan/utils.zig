@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const mem = @import("mem.zig");
-
 pub fn hashMapFromStruct(comptime T: type, allocator: std.mem.Allocator, strukt: anytype) !T {
     const info = hashMapInfo(T);
 
@@ -34,7 +32,7 @@ pub fn hashMapInfo(comptime T: type) struct {
     }
 
     pub fn uniformCall(comptime self: @This(), map: anytype, func: anytype, allocator: std.mem.Allocator, params: anytype) UniformCall(@TypeOf(func)) {
-        if (self.managed) std.debug.assert(mem.eqlAllocator(allocator, map.allocator));
+        if (self.managed) std.debug.assert(std.meta.eql(allocator, map.allocator));
         return @call(
             .auto,
             func,
