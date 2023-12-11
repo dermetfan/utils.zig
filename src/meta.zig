@@ -6,7 +6,7 @@ pub fn hashMapFromStruct(comptime T: type, allocator: std.mem.Allocator, strukt:
     var map = info.uniformInit(allocator);
     errdefer info.uniformDeinit(&map, allocator);
 
-    const fields = @typeInfo(@TypeOf(strukt)).Struct.fields;
+    const fields = std.meta.fields(@TypeOf(strukt));
     try info.uniformCall(&map, T.ensureTotalCapacity, allocator, .{fields.len});
     inline for (fields) |field|
         map.putAssumeCapacityNoClobber(field.name, @field(strukt, field.name));
@@ -42,8 +42,8 @@ pub fn hashMapInfo(comptime T: type) struct {
 } {
     var K: type = undefined;
     var V: type = undefined;
-    inline for (@typeInfo(T.KV).Struct.fields) |field| {
-        inline for (&.{ "key", "value" }, &.{ &K, &V }) |name, ptr| { // XXX &.{}
+    inline for (std.meta.fields(T.KV)) |field| {
+        inline for (.{ "key", "value" }, .{ &K, &V }) |name, ptr| {
             if (std.mem.eql(u8, field.name, name)) ptr.* = field.type;
         }
     }
@@ -56,39 +56,18 @@ pub fn hashMapInfo(comptime T: type) struct {
 }
 
 pub fn ConcatenatedTuples(comptime tuples: []const type) type {
-    var tuple_info = @typeInfo(tuples[0]).Struct;
-    tuple_info.fields = &.{};
-    tuple_info.decls = &.{};
-
-    comptime var i = 0;
-    inline for (tuples) |tuple| {
-        const info = switch (@typeInfo(tuple)) {
-            .Struct => |s| s,
-            .Pointer => |p| @typeInfo(p.child).Struct,
-            else => unreachable,
-        };
-
-        tuple_info.decls = tuple_info.decls ++ info.decls;
-
-        inline for (info.fields) |field| {
-            defer i += 1;
-            tuple_info.fields = tuple_info.fields ++ [_]std.builtin.Type.StructField{.{
-                .name = std.fmt.comptimePrint("{d}", .{i}),
-                .type = field.type,
-                .default_value = field.default_value,
-                .is_comptime = field.is_comptime,
-                .alignment = field.alignment,
-            }};
-        }
+    var types: []const type = &.{};
+    for (tuples) |tuple| {
+        for (std.meta.fields(tuple)) |field|
+            types = types ++ [_]type{field.type};
     }
-
-    return @Type(.{ .Struct = tuple_info });
+    return std.meta.Tuple(types);
 }
 
 pub fn ConcatTuples(comptime Tuples: type) type {
-    const fields = @typeInfo(Tuples).Struct.fields;
+    const fields = std.meta.fields(Tuples);
     var types: [fields.len]type = undefined;
-    inline for (fields, 0..) |field, i| types[i] = field.type;
+    for (fields, &types) |field, *t| t.* = field.type;
     return ConcatenatedTuples(&types);
 }
 
