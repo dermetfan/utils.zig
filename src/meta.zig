@@ -110,11 +110,13 @@ pub fn DropUfcsParam(comptime T: type) type {
     return @Type(.{ .Fn = fn_info });
 }
 
-pub fn Closure(comptime Fn: type, comptime mutable: bool) type {
-    const fn_info = @typeInfo(Fn).Fn;
+pub fn Closure(comptime Func: type, comptime mutable: bool) type {
+    const fn_info = @typeInfo(Func).Fn;
     return union(enum) {
         stateful: Stateful,
         stateless: Stateless,
+
+        pub const Fn = Func;
 
         const Self = @This();
 
