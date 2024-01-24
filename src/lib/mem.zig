@@ -1,4 +1,25 @@
 const std = @import("std");
+const trait = @import("trait");
+
+pub fn AnyAsBytesUnpad(Any: type) type {
+    return if (trait.ptrQualifiedWith(.@"const")(Any)) []const u8 else []u8;
+}
+
+pub fn anyAsBytesUnpad(any: anytype) AnyAsBytesUnpad(@TypeOf(any)) {
+    const Any = @TypeOf(any);
+    if (comptime Any == @TypeOf(null)) return &.{};
+    const bytes = if (comptime trait.ptrOfSize(.Slice)(Any)) std.mem.sliceAsBytes(any) else std.mem.asBytes(any);
+    return bytes[0 .. bytes.len - paddingOf(std.meta.Child(Any))];
+}
+
+test anyAsBytesUnpad {
+    try std.testing.expectEqualSlices(u8, switch (@import("builtin").cpu.arch.endian()) {
+        .little => "\x11\x00\x00\x00\x12\x00\x00",
+        .big => "\x00\x00\x11\x00\x00\x00\x12",
+    }, anyAsBytesUnpad(@as([]const u17, &.{ 17, 18 })));
+
+    try std.testing.expectEqualSlices(u8, &.{}, anyAsBytesUnpad(null));
+}
 
 /// Like `@sizeOf()` without padding.
 pub fn sizeOfUnpad(comptime T: type) comptime_int {
