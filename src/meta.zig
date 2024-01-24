@@ -1,4 +1,5 @@
 const std = @import("std");
+const trait = @import("trait");
 
 pub fn hashMapFromStruct(comptime T: type, allocator: std.mem.Allocator, strukt: anytype) !T {
     const info = hashMapInfo(T);
@@ -51,7 +52,7 @@ pub fn hashMapInfo(comptime T: type) struct {
     return .{
         .K = K,
         .V = V,
-        .managed = std.meta.trait.hasField("unmanaged")(T),
+        .managed = trait.hasField("unmanaged")(T),
     };
 }
 
@@ -201,8 +202,8 @@ test Closure {
     }.call).call(.{}));
 }
 
-pub fn closure(state_fn: anytype, state: anytype) Closure(DropUfcsParam(@TypeOf(state_fn)), !std.meta.trait.isConstPtr(@TypeOf(state))) {
-    return Closure(DropUfcsParam(@TypeOf(state_fn)), !std.meta.trait.isConstPtr(@TypeOf(state))).stateful(state_fn, state);
+pub fn closure(state_fn: anytype, state: anytype) Closure(DropUfcsParam(@TypeOf(state_fn)), !trait.ptrQualifiedWith(.@"const")(@TypeOf(state))) {
+    return Closure(DropUfcsParam(@TypeOf(state_fn)), !trait.ptrQualifiedWith(.@"const")(@TypeOf(state))).stateful(state_fn, state);
 }
 
 pub fn disclosure(func: anytype, comptime mutable: bool) Closure(@TypeOf(func), mutable) {
