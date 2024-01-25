@@ -51,3 +51,10 @@ test paddingOf {
     try std.testing.expectEqual(@as(usize, 0), paddingOf(u32));
     try std.testing.expectEqual(@as(usize, 3), paddingOf(u33));
 }
+
+pub fn Borrowned(comptime T: type) type {
+    return struct {
+        data: T,
+        owned: bool,
+    };
+}
