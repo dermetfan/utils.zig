@@ -1,6 +1,8 @@
 const std = @import("std");
 const trait = @import("trait");
 
+const enums = @import("enums.zig");
+
 pub fn hashMapFromStruct(comptime T: type, allocator: std.mem.Allocator, strukt: anytype) !T {
     const info = hashMapInfo(T);
 
@@ -103,6 +105,60 @@ pub fn OptionalChild(comptime T: type) ?type {
         .Array, .Vector, .Pointer, .Optional => std.meta.Child(T),
         else => null,
     };
+}
+
+pub fn fieldTypes(comptime T: type) []const type {
+    comptime var types: []const type = &.{};
+    inline for (std.meta.fields(T)) |field|
+        types = types ++ .{field.type};
+    return types;
+}
+
+test fieldTypes {
+    try std.testing.expectEqualSlices(type, &.{ u1, u2 }, fieldTypes(struct { a: u1, b: u2 }));
+    try std.testing.expectEqualSlices(type, &.{ u1, u2 }, fieldTypes(union { a: u1, b: u2 }));
+    try std.testing.expectEqualSlices(type, &.{ u1, u2 }, fieldTypes(union(enum) { a: u1, b: u2 }));
+}
+
+pub fn FieldsTuple(Struct: type) type {
+    if (trait.isTuple(Struct)) return Struct;
+    return std.meta.Tuple(fieldTypes(Struct));
+}
+
+test FieldsTuple {
+    const Struct = struct {
+        a: u8,
+        b: bool,
+    };
+    const Tuple = FieldsTuple(Struct);
+
+    try std.testing.expectEqual(std.meta.fieldInfo(Struct, .a).type, std.meta.fieldInfo(Tuple, .@"0").type);
+    try std.testing.expectEqual(std.meta.fieldInfo(Struct, .b).type, std.meta.fieldInfo(Tuple, .@"1").type);
+    try std.testing.expectEqual(2, @as(Tuple, undefined).len);
+}
+
+pub fn SubUnion(comptime Union: type, comptime fields: []const std.meta.FieldEnum(Union)) type {
+    comptime var info = @typeInfo(Union).Union;
+
+    info.fields = &.{};
+    inline for (fields) |field|
+        info.fields = info.fields ++ .{std.meta.fieldInfo(Union, field)};
+
+    if (@typeInfo(Union).Union.tag_type) |tag_type|
+        info.tag_type = enums.Sub(tag_type, fields);
+
+    return @Type(.{ .Union = info });
+}
+
+test SubUnion {
+    const U1 = union { a: u1, b: u2, c: u3 };
+    const U2 = SubUnion(U1, &.{ .a, .c });
+
+    const u2_field_names = std.meta.fieldNames(U2);
+
+    try std.testing.expectEqual(2, u2_field_names.len);
+    try std.testing.expectEqualStrings("a", u2_field_names[0]);
+    try std.testing.expectEqualStrings("c", u2_field_names[1]);
 }
 
 pub fn DropUfcsParam(comptime T: type) type {

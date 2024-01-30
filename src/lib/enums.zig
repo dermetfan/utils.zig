@@ -53,3 +53,24 @@ test Merged {
         try std.testing.expectEqual(6, info.fields.len);
     }
 }
+
+pub fn Sub(comptime Enum: type, comptime tags: []const Enum) type {
+    var info = @typeInfo(Enum).Enum;
+    info.fields = &.{};
+    inline for (tags) |tag| info.fields = info.fields ++ .{.{
+        .name = @tagName(tag),
+        .value = @intFromEnum(tag),
+    }};
+    return @Type(.{ .Enum = info });
+}
+
+test Sub {
+    const E1 = enum { a, b, c };
+    const E2 = Sub(E1, &.{ .a, .c });
+
+    const e2_tags = std.meta.tags(E2);
+
+    try std.testing.expectEqual(2, e2_tags.len);
+    try std.testing.expectEqualStrings("a", @tagName(e2_tags[0]));
+    try std.testing.expectEqualStrings("c", @tagName(e2_tags[1]));
+}
