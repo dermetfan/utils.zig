@@ -161,6 +161,77 @@ test SubUnion {
     try std.testing.expectEqualStrings("c", u2_field_names[1]);
 }
 
+pub fn MergedUnions(comptime A: type, comptime B: type, comptime tagged: bool) type {
+    const a = @typeInfo(A).Union;
+    const b = @typeInfo(B).Union;
+
+    var info = a;
+
+    info.fields = info.fields ++ b.fields;
+    info.decls = info.decls ++ b.decls;
+
+    info.tag_type = if (tagged) blk: {
+        const a_tag = if (a.tag_type) |tag| tag else std.meta.FieldEnum(A);
+        const b_tag = if (b.tag_type) |tag| tag else std.meta.FieldEnum(B);
+
+        break :blk enums.Merged(&.{ a_tag, b_tag }, true);
+    } else null;
+
+    return @Type(.{ .Union = info });
+}
+
+test MergedUnions {
+    const expectEqualUnions = struct {
+        fn expectEqualUnions(comptime A: type, comptime B: type) !void {
+            const a = @typeInfo(A).Union;
+            const b = @typeInfo(B).Union;
+
+            inline for (a.fields, b.fields) |a_field, b_field| {
+                try std.testing.expectEqualStrings(a_field.name, b_field.name);
+                try std.testing.expectEqual(a_field.alignment, b_field.alignment);
+                try std.testing.expectEqual(a_field.type, b_field.type);
+            }
+
+            inline for (a.decls, b.decls) |a_decl, b_decl|
+                try std.testing.expectEqualStrings(a_decl.name, b_decl.name);
+
+            if (a.tag_type != null and b.tag_type != null) {
+                const a_tag = @typeInfo(a.tag_type.?).Enum;
+                const b_tag = @typeInfo(b.tag_type.?).Enum;
+
+                try std.testing.expectEqual(a_tag.tag_type, b_tag.tag_type);
+            } else try std.testing.expect((a.tag_type == null) == (b.tag_type == null));
+
+            try std.testing.expectEqual(a.layout, b.layout);
+        }
+    }.expectEqualUnions;
+
+    const TagA = enum(u8) { a = 2 };
+    const TagB = enum(u8) { b = 4 };
+
+    try expectEqualUnions(
+        union { a: u1, b: u2 },
+        MergedUnions(
+            union(TagA) { a: u1 },
+            union(TagB) { b: u2 },
+            false,
+        ),
+    );
+
+    {
+        const TagMerged = enum(u1) { a, b };
+
+        try expectEqualUnions(
+            union(TagMerged) { a: u1, b: u2 },
+            MergedUnions(
+                union(TagA) { a: u1 },
+                union(TagB) { b: u2 },
+                true,
+            ),
+        );
+    }
+}
+
 pub fn DropUfcsParam(comptime T: type) type {
     var fn_info = @typeInfo(T).Fn;
     fn_info.params = fn_info.params[1..];
