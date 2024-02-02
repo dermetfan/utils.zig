@@ -232,6 +232,28 @@ test MergedUnions {
     }
 }
 
+pub fn SubStruct(comptime T: type, comptime fields: []const std.meta.FieldEnum(T)) type {
+    var info = @typeInfo(T).Struct;
+    info.fields = &.{};
+
+    for (fields) |field_name|
+        info.fields = info.fields ++ .{std.meta.fieldInfo(T, field_name)};
+
+    return @Type(.{ .Struct = info });
+}
+
+test SubStruct {
+    const Sub = SubStruct(
+        struct { a: u1, b: u2, c: u3 },
+        &.{ .a, .c },
+    );
+
+    const sub_field_names = std.meta.fieldNames(Sub);
+    try std.testing.expectEqual(2, sub_field_names.len);
+    try std.testing.expectEqualStrings("a", sub_field_names[0]);
+    try std.testing.expectEqualStrings("c", sub_field_names[1]);
+}
+
 pub fn DropUfcsParam(comptime T: type) type {
     var fn_info = @typeInfo(T).Fn;
     fn_info.params = fn_info.params[1..];
