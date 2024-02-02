@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn Merged(comptime enums: []const type) type {
+pub fn Merged(comptime enums: []const type, comptime reindex: bool) type {
     var tag_int = std.builtin.Type.Int{
         .signedness = .unsigned,
         .bits = 0,
@@ -12,6 +12,16 @@ pub fn Merged(comptime enums: []const type) type {
     for (enums) |e| {
         const info = @typeInfo(e).Enum;
 
+        for (info.fields) |field| {
+            var new_field = field;
+            if (reindex) new_field.value = fields.len;
+            fields = fields ++ [_]std.builtin.Type.EnumField{new_field};
+        }
+
+        for (info.decls) |decl| decls = decls ++ [_]std.builtin.Type.Declaration{decl};
+
+        if (!info.is_exhaustive) is_exhaustive = false;
+
         {
             const tag_info = @typeInfo(info.tag_type).Int;
 
@@ -20,14 +30,11 @@ pub fn Merged(comptime enums: []const type) type {
                 .unsigned => {},
             }
 
-            tag_int.bits = @max(tag_int.bits, tag_info.bits);
+            if (reindex)
+                tag_int = @typeInfo(std.math.IntFittingRange(0, fields.len - 1)).Int
+            else
+                tag_int.bits = @max(tag_int.bits, tag_info.bits);
         }
-
-        for (info.fields) |field| fields = fields ++ [_]std.builtin.Type.EnumField{field};
-
-        for (info.decls) |decl| decls = decls ++ [_]std.builtin.Type.Declaration{decl};
-
-        if (!info.is_exhaustive) is_exhaustive = false;
     }
 
     const tag_type = @Type(.{ .Int = tag_int });
@@ -47,9 +54,40 @@ test Merged {
         const E = Merged(&.{
             enum { a, b },
             enum(u3) { c = 2, d, e, f },
-        });
+        }, false);
         const info = @typeInfo(E).Enum;
         try std.testing.expectEqual(u3, info.tag_type);
         try std.testing.expectEqual(6, info.fields.len);
     }
+
+    {
+        const E = Merged(&.{
+            enum { a, b },
+            enum(u3) { c, d, e, f },
+        }, true);
+        const info = @typeInfo(E).Enum;
+        try std.testing.expectEqual(u3, info.tag_type);
+        try std.testing.expectEqual(6, info.fields.len);
+    }
+}
+
+pub fn Sub(comptime Enum: type, comptime tags: []const Enum) type {
+    var info = @typeInfo(Enum).Enum;
+    info.fields = &.{};
+    inline for (tags) |tag| info.fields = info.fields ++ .{.{
+        .name = @tagName(tag),
+        .value = @intFromEnum(tag),
+    }};
+    return @Type(.{ .Enum = info });
+}
+
+test Sub {
+    const E1 = enum { a, b, c };
+    const E2 = Sub(E1, &.{ .a, .c });
+
+    const e2_tags = std.meta.tags(E2);
+
+    try std.testing.expectEqual(2, e2_tags.len);
+    try std.testing.expectEqualStrings("a", @tagName(e2_tags[0]));
+    try std.testing.expectEqualStrings("c", @tagName(e2_tags[1]));
 }

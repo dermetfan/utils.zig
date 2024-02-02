@@ -1,6 +1,8 @@
 const std = @import("std");
 const trait = @import("trait");
 
+const enums = @import("enums.zig");
+
 pub fn hashMapFromStruct(comptime T: type, allocator: std.mem.Allocator, strukt: anytype) !T {
     const info = hashMapInfo(T);
 
@@ -103,6 +105,153 @@ pub fn OptionalChild(comptime T: type) ?type {
         .Array, .Vector, .Pointer, .Optional => std.meta.Child(T),
         else => null,
     };
+}
+
+pub fn fieldTypes(comptime T: type) []const type {
+    comptime var types: []const type = &.{};
+    inline for (std.meta.fields(T)) |field|
+        types = types ++ .{field.type};
+    return types;
+}
+
+test fieldTypes {
+    try std.testing.expectEqualSlices(type, &.{ u1, u2 }, fieldTypes(struct { a: u1, b: u2 }));
+    try std.testing.expectEqualSlices(type, &.{ u1, u2 }, fieldTypes(union { a: u1, b: u2 }));
+    try std.testing.expectEqualSlices(type, &.{ u1, u2 }, fieldTypes(union(enum) { a: u1, b: u2 }));
+}
+
+pub fn FieldsTuple(Struct: type) type {
+    if (trait.isTuple(Struct)) return Struct;
+    return std.meta.Tuple(fieldTypes(Struct));
+}
+
+test FieldsTuple {
+    const Struct = struct {
+        a: u8,
+        b: bool,
+    };
+    const Tuple = FieldsTuple(Struct);
+
+    try std.testing.expectEqual(std.meta.fieldInfo(Struct, .a).type, std.meta.fieldInfo(Tuple, .@"0").type);
+    try std.testing.expectEqual(std.meta.fieldInfo(Struct, .b).type, std.meta.fieldInfo(Tuple, .@"1").type);
+    try std.testing.expectEqual(2, @as(Tuple, undefined).len);
+}
+
+pub fn SubUnion(comptime Union: type, comptime fields: []const std.meta.FieldEnum(Union)) type {
+    comptime var info = @typeInfo(Union).Union;
+
+    info.fields = &.{};
+    inline for (fields) |field|
+        info.fields = info.fields ++ .{std.meta.fieldInfo(Union, field)};
+
+    if (@typeInfo(Union).Union.tag_type) |tag_type|
+        info.tag_type = enums.Sub(tag_type, fields);
+
+    return @Type(.{ .Union = info });
+}
+
+test SubUnion {
+    const U1 = union { a: u1, b: u2, c: u3 };
+    const U2 = SubUnion(U1, &.{ .a, .c });
+
+    const u2_field_names = std.meta.fieldNames(U2);
+
+    try std.testing.expectEqual(2, u2_field_names.len);
+    try std.testing.expectEqualStrings("a", u2_field_names[0]);
+    try std.testing.expectEqualStrings("c", u2_field_names[1]);
+}
+
+pub fn MergedUnions(comptime A: type, comptime B: type, comptime tagged: bool) type {
+    const a = @typeInfo(A).Union;
+    const b = @typeInfo(B).Union;
+
+    var info = a;
+
+    info.fields = info.fields ++ b.fields;
+    info.decls = info.decls ++ b.decls;
+
+    info.tag_type = if (tagged) blk: {
+        const a_tag = if (a.tag_type) |tag| tag else std.meta.FieldEnum(A);
+        const b_tag = if (b.tag_type) |tag| tag else std.meta.FieldEnum(B);
+
+        break :blk enums.Merged(&.{ a_tag, b_tag }, true);
+    } else null;
+
+    return @Type(.{ .Union = info });
+}
+
+test MergedUnions {
+    const expectEqualUnions = struct {
+        fn expectEqualUnions(comptime A: type, comptime B: type) !void {
+            const a = @typeInfo(A).Union;
+            const b = @typeInfo(B).Union;
+
+            inline for (a.fields, b.fields) |a_field, b_field| {
+                try std.testing.expectEqualStrings(a_field.name, b_field.name);
+                try std.testing.expectEqual(a_field.alignment, b_field.alignment);
+                try std.testing.expectEqual(a_field.type, b_field.type);
+            }
+
+            inline for (a.decls, b.decls) |a_decl, b_decl|
+                try std.testing.expectEqualStrings(a_decl.name, b_decl.name);
+
+            if (a.tag_type != null and b.tag_type != null) {
+                const a_tag = @typeInfo(a.tag_type.?).Enum;
+                const b_tag = @typeInfo(b.tag_type.?).Enum;
+
+                try std.testing.expectEqual(a_tag.tag_type, b_tag.tag_type);
+            } else try std.testing.expect((a.tag_type == null) == (b.tag_type == null));
+
+            try std.testing.expectEqual(a.layout, b.layout);
+        }
+    }.expectEqualUnions;
+
+    const TagA = enum(u8) { a = 2 };
+    const TagB = enum(u8) { b = 4 };
+
+    try expectEqualUnions(
+        union { a: u1, b: u2 },
+        MergedUnions(
+            union(TagA) { a: u1 },
+            union(TagB) { b: u2 },
+            false,
+        ),
+    );
+
+    {
+        const TagMerged = enum(u1) { a, b };
+
+        try expectEqualUnions(
+            union(TagMerged) { a: u1, b: u2 },
+            MergedUnions(
+                union(TagA) { a: u1 },
+                union(TagB) { b: u2 },
+                true,
+            ),
+        );
+    }
+}
+
+pub fn SubStruct(comptime T: type, comptime fields: []const std.meta.FieldEnum(T)) type {
+    var info = @typeInfo(T).Struct;
+    info.fields = &.{};
+
+    for (fields) |field_name|
+        info.fields = info.fields ++ .{std.meta.fieldInfo(T, field_name)};
+
+    return @Type(.{ .Struct = info });
+}
+
+test SubStruct {
+    const Sub = SubStruct(
+        struct { a: u1, b: u2, c: u3 },
+        &.{ .a, .c },
+    );
+
+    const sub_field_names = std.meta.fieldNames(Sub);
+    try std.testing.expectEqual(2, sub_field_names.len);
+    try std.testing.expectEqualStrings("a", sub_field_names[0]);
+    try std.testing.expectEqualStrings("c", sub_field_names[1]);
 }
 
 pub fn DropUfcsParam(comptime T: type) type {

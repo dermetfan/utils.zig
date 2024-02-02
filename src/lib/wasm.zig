@@ -7,7 +7,7 @@ pub const @"usize" = u32;
 pub const Value = union(enums.Merged(&.{
     std.wasm.Valtype,
     std.wasm.RefType,
-})) {
+}, false)) {
     i32: i32,
     i64: i64,
     f32: f32,
