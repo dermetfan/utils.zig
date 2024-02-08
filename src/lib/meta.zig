@@ -254,6 +254,108 @@ test SubStruct {
     try std.testing.expectEqualStrings("c", sub_field_names[1]);
 }
 
+pub fn FieldInfo(comptime T: type) type {
+    return std.meta.Elem(@TypeOf(std.meta.fields(T)));
+}
+
+test FieldInfo {
+    try std.testing.expectEqual(std.builtin.Type.StructField, FieldInfo(struct {}));
+    try std.testing.expectEqual(std.builtin.Type.EnumField, FieldInfo(enum {}));
+    try std.testing.expectEqual(std.builtin.Type.UnionField, FieldInfo(union {}));
+    try std.testing.expectEqual(std.builtin.Type.Error, FieldInfo(error{}));
+}
+
+pub fn MapFields(comptime T: type, map: fn (FieldInfo(T)) FieldInfo(T)) type {
+    var info = @typeInfo(T);
+    switch (info) {
+        .ErrorSet => |*error_set| if (error_set.*) |errs| {
+            var new_errs: [errs.len]std.builtin.Type.Error = undefined;
+            for (errs, &new_errs) |err, *new_err| new_err.* = map(err);
+            error_set.* = &new_errs;
+        },
+        inline else => |*i| {
+            i.fields = &.{};
+            for (std.meta.fields(T)) |field|
+                i.fields = i.fields ++ [_]FieldInfo(T){map(field)};
+        },
+    }
+    return @Type(info);
+}
+
+test MapFields {
+    const fns = struct {
+        fn simpleTest(comptime T: type) !void {
+            const TMapped = MapFields(T, mapFn(T));
+            try expectFieldNames(TMapped);
+        }
+
+        fn mapFn(comptime T: type) fn (FieldInfo(T)) FieldInfo(T) {
+            return struct {
+                fn map(field: FieldInfo(T)) FieldInfo(T) {
+                    var f = field;
+                    f.name = "foo_" ++ f.name;
+                    return f;
+                }
+            }.map;
+        }
+
+        fn expectFieldNames(comptime T: type) !void {
+            const field_names = std.meta.fieldNames(T);
+
+            try std.testing.expectEqual(2, field_names.len);
+            try std.testing.expectEqualStrings("foo_a", field_names[0]);
+            try std.testing.expectEqualStrings("foo_b", field_names[1]);
+        }
+    };
+
+    try fns.simpleTest(struct { a: u1, b: u2 });
+    try fns.simpleTest(enum { a, b });
+    try fns.simpleTest(error{ a, b });
+    try fns.simpleTest(union { a: u1, b: u2 });
+}
+
+pub fn MapTaggedUnionFields(
+    comptime T: type,
+    map_field: fn (FieldInfo(T)) FieldInfo(T),
+    map_tag_field: fn (FieldInfo(@typeInfo(T).Union.tag_type.?)) FieldInfo(@typeInfo(T).Union.tag_type.?),
+) type {
+    var info = @typeInfo(T).Union;
+
+    info.fields = &.{};
+    for (std.meta.fields(T)) |field|
+        info.fields = info.fields ++ [_]FieldInfo(T){map_field(field)};
+
+    info.tag_type = MapFields(info.tag_type.?, map_tag_field);
+
+    return @Type(.{ .Union = info });
+}
+
+test MapTaggedUnionFields {
+    const Foo = union(enum) { a: u1, b: u2 };
+
+    const fns = struct {
+        fn map(field: FieldInfo(Foo)) FieldInfo(Foo) {
+            var f = field;
+            f.name = "foo_" ++ f.name;
+            return f;
+        }
+
+        fn mapTag(field: FieldInfo(@typeInfo(Foo).Union.tag_type.?)) FieldInfo(@typeInfo(Foo).Union.tag_type.?) {
+            var f = field;
+            f.name = "foo_" ++ f.name;
+            return f;
+        }
+    };
+
+    const FooMapped = MapTaggedUnionFields(Foo, fns.map, fns.mapTag);
+
+    const field_names = std.meta.fieldNames(FooMapped);
+
+    try std.testing.expectEqual(2, field_names.len);
+    try std.testing.expectEqualStrings("foo_a", field_names[0]);
+    try std.testing.expectEqualStrings("foo_b", field_names[1]);
+}
+
 pub fn DropUfcsParam(comptime T: type) type {
     var fn_info = @typeInfo(T).Fn;
     fn_info.params = fn_info.params[1..];
