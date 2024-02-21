@@ -232,6 +232,37 @@ test MergedUnions {
     }
 }
 
+pub fn MergedStructs(comptime A: type, comptime B: type) type {
+    var info = @typeInfo(A).Struct;
+    info.decls = &.{};
+    info.fields = info.fields ++ @typeInfo(B).Struct.fields;
+    return @Type(.{ .Struct = info });
+}
+
+test MergedStructs {
+    comptime try std.testing.expectEqualDeep(
+        @typeInfo(MergedStructs(
+            struct {
+                foo: u1,
+                bar: u2,
+            },
+            struct {
+                baz: u3,
+            },
+        )).Struct,
+        std.builtin.Type.Struct{
+            .layout = .Auto,
+            .is_tuple = false,
+            .decls = &.{},
+            .fields = &.{
+                .{ .name = "foo", .type = u1, .default_value = null, .is_comptime = false, .alignment = @alignOf(u1) },
+                .{ .name = "bar", .type = u2, .default_value = null, .is_comptime = false, .alignment = @alignOf(u2) },
+                .{ .name = "baz", .type = u3, .default_value = null, .is_comptime = false, .alignment = @alignOf(u3) },
+            },
+        },
+    );
+}
+
 pub fn SubStruct(comptime T: type, comptime fields: []const std.meta.FieldEnum(T)) type {
     var info = @typeInfo(T).Struct;
     info.decls = &.{};
