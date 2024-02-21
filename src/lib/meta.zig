@@ -234,6 +234,7 @@ test MergedUnions {
 
 pub fn SubStruct(comptime T: type, comptime fields: []const std.meta.FieldEnum(T)) type {
     var info = @typeInfo(T).Struct;
+    info.decls = &.{};
     info.fields = &.{};
 
     for (fields) |field_name|
