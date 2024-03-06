@@ -7,7 +7,7 @@ pub fn AnyAsBytesUnpad(Any: type) type {
 
 pub fn anyAsBytesUnpad(any: anytype) AnyAsBytesUnpad(@TypeOf(any)) {
     const Any = @TypeOf(any);
-    if (comptime Any == @TypeOf(null)) return &.{};
+    if (comptime trait.is(.Null)(Any) or trait.is(.Void)(Any)) return &.{};
     const bytes = if (comptime trait.ptrOfSize(.Slice)(Any)) std.mem.sliceAsBytes(any) else std.mem.asBytes(any);
     return bytes[0 .. bytes.len - paddingOf(std.meta.Child(Any))];
 }

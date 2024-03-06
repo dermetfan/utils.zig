@@ -91,3 +91,20 @@ test Sub {
     try std.testing.expectEqualStrings("a", @tagName(e2_tags[0]));
     try std.testing.expectEqualStrings("c", @tagName(e2_tags[1]));
 }
+
+/// Raises the tag type to the next power of two
+/// if it is not a power of two already.
+pub fn EnsurePowTag(comptime E: type, min: comptime_int) type {
+    var info = @typeInfo(E).Enum;
+    info.tag_type = tag: {
+        var tag_info = @typeInfo(info.tag_type).Int;
+        tag_info.bits = std.math.ceilPowerOfTwoAssert(@TypeOf(tag_info.bits), @max(min, tag_info.bits));
+        break :tag @Type(.{ .Int = tag_info });
+    };
+    return @Type(.{ .Enum = info });
+}
+
+test EnsurePowTag {
+    try std.testing.expectEqual(u8, std.meta.Tag(EnsurePowTag(enum(u0) {}, 8)));
+    try std.testing.expectEqual(u8, std.meta.Tag(EnsurePowTag(enum(u8) {}, 8)));
+}
