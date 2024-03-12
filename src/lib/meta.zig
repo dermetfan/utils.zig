@@ -388,6 +388,19 @@ test MapTaggedUnionFields {
     try std.testing.expectEqualStrings("foo_b", field_names[1]);
 }
 
+/// Raises the number of bits to the next power of two
+/// if it is not a power of two already.
+pub fn EnsurePowBits(comptime T: type, min: comptime_int) type {
+    var info = @typeInfo(T).Int;
+    info.bits = std.math.ceilPowerOfTwoAssert(@TypeOf(info.bits), @max(min, info.bits));
+    return @Type(.{ .Int = info });
+}
+
+test EnsurePowBits {
+    try std.testing.expectEqual(u8, EnsurePowBits(u0, 8));
+    try std.testing.expectEqual(u8, EnsurePowBits(u8, 8));
+}
+
 pub fn DropUfcsParam(comptime T: type) type {
     var fn_info = @typeInfo(T).Fn;
     fn_info.params = fn_info.params[1..];

@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const meta = @import("meta.zig");
+
 pub fn Merged(comptime enums: []const type, comptime reindex: bool) type {
     var tag_int = std.builtin.Type.Int{
         .signedness = .unsigned,
@@ -96,11 +98,7 @@ test Sub {
 /// if it is not a power of two already.
 pub fn EnsurePowTag(comptime E: type, min: comptime_int) type {
     var info = @typeInfo(E).Enum;
-    info.tag_type = tag: {
-        var tag_info = @typeInfo(info.tag_type).Int;
-        tag_info.bits = std.math.ceilPowerOfTwoAssert(@TypeOf(tag_info.bits), @max(min, tag_info.bits));
-        break :tag @Type(.{ .Int = tag_info });
-    };
+    info.tag_type = meta.EnsurePowBits(info.tag_type, min);
     return @Type(.{ .Enum = info });
 }
 
