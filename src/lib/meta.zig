@@ -251,7 +251,7 @@ test MergedStructs {
             },
         )).Struct,
         std.builtin.Type.Struct{
-            .layout = .Auto,
+            .layout = .auto,
             .is_tuple = false,
             .decls = &.{},
             .fields = &.{
@@ -399,6 +399,22 @@ pub fn EnsurePowBits(comptime T: type, min: comptime_int) type {
 test EnsurePowBits {
     try std.testing.expectEqual(u8, EnsurePowBits(u0, 8));
     try std.testing.expectEqual(u8, EnsurePowBits(u8, 8));
+}
+
+pub fn FnErrorSet(comptime Fn: type) type {
+    const info = @typeInfo(Fn).Fn;
+    const ret = info.return_type.?;
+    const ret_info = @typeInfo(ret);
+    return switch (ret_info) {
+        .ErrorSet => ret,
+        .ErrorUnion => |error_union| error_union.error_set,
+        else => @compileError(@typeName(Fn) ++ " does not return an error union or error set"),
+    };
+}
+
+test FnErrorSet {
+    try std.testing.expectEqual(error{Foo}, FnErrorSet(fn () error{Foo}));
+    try std.testing.expectEqual(error{Foo}, FnErrorSet(fn () error{Foo}!void));
 }
 
 pub fn DropUfcsParam(comptime T: type) type {
