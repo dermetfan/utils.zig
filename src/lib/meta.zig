@@ -417,6 +417,14 @@ test FnErrorSet {
     try std.testing.expectEqual(error{Foo}, FnErrorSet(fn () error{Foo}!void));
 }
 
+pub fn FnErrorUnionPayload(comptime Fn: type) type {
+    return @typeInfo(@typeInfo(Fn).Fn.return_type.?).ErrorUnion.payload;
+}
+
+test FnErrorUnionPayload {
+    try std.testing.expectEqual(void, FnErrorUnionPayload(fn () error{Foo}!void));
+}
+
 pub fn DropUfcsParam(comptime T: type) type {
     var fn_info = @typeInfo(T).Fn;
     fn_info.params = fn_info.params[1..];
