@@ -230,6 +230,61 @@ pub const FlakeMetadata = struct {
                 .submodules = true,
             }).toUrl(allocator)});
         }
+
+        /// Writes the URL-like form suitable to be passed to `--allowed-uris`.
+        pub fn writeAllowedUri(self: @This(), allocator: std.mem.Allocator, writer: anytype) !void {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const arena_allocator = arena.allocator();
+
+            const write_to_stream_options = .{
+                .scheme = true,
+                .authentication = true,
+                .authority = true,
+                .path = true,
+
+                // As of Nix 2.19, Nix does not parse the query.
+                // Instead it just does a prefix match
+                // against the URL in question without its query.
+                // That also means it is impossible to use `--allowed-uris`
+                // to allow URLs like `github:foo/bar?host=example.com`.
+                // TODO As of Nix 2.21 (maybe also earlier),
+                // the `narHash` query param is included and checked against,
+                // so we should allow that as well.
+                .query = false,
+            };
+
+            const url = try self.toUrl(arena_allocator);
+
+            try url.writeToStream(write_to_stream_options, writer);
+            try writer.writeByte(' ');
+
+            // As of Nix 2.19, shorthands are translated
+            // into their target URL and that is checked against,
+            // so we need to allow the target URL as well.
+            // This is fixed in Nix 2.21 (maybe also earlier).
+            if (switch (self.type) {
+                .github => std.Uri{
+                    .scheme = "https",
+                    .host = self.host orelse "github.com",
+                    .path = try std.mem.concat(arena_allocator, u8, &.{
+                        "/",
+                        self.owner.?,
+                        "/",
+                        self.repo.?,
+                        "/",
+                        "archive",
+                        "/",
+                        self.ref orelse self.rev.?,
+                        ".tar.gz",
+                    }),
+                },
+                // TODO gitlab
+                // TODO sourcehut
+                else => null,
+            }) |target_url|
+                try target_url.writeToStream(write_to_stream_options, writer);
+        }
     };
 
     /// Contents of `flake.lock`.
@@ -369,12 +424,15 @@ pub fn impl(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakePrefetchOptions,
-        ) !std.json.Parsed(FlakeMetadata.Locks) {
+        ) !?std.json.Parsed(FlakeMetadata.Locks) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
                     "nix",
                     "flake",
                     "prefetch",
+                    "--no-use-registries",
+                    "--flake-registry",
+                    "",
                 },
                 if (opts.refresh) &.{"--refresh"} else &.{},
                 &.{
@@ -409,7 +467,8 @@ pub fn impl(
                     const path = try std.fs.path.join(allocator, &.{ stdout_parsed.value.storePath, "flake.lock" });
                     defer allocator.free(path);
 
-                    break :flake_lock try std.fs.openFileAbsolute(path, .{});
+                    break :flake_lock std.fs.openFileAbsolute(path, .{}) catch |err|
+                        return if (err == error.FileNotFound) null else err;
                 };
                 defer flake_lock.close();
 
@@ -420,7 +479,7 @@ pub fn impl(
             };
             defer json.deinit();
 
-            return std.json.parseFromValue(FlakeMetadata.Locks, allocator, json.value, json_options);
+            return try std.json.parseFromValue(FlakeMetadata.Locks, allocator, json.value, json_options);
         }
 
         pub fn lockFlakeRef(allocator: std.mem.Allocator, flake_ref: []const u8, opts: FlakeMetadataOptions) ![]const u8 {
