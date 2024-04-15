@@ -2,6 +2,128 @@ const std = @import("std");
 
 const meta = @import("meta.zig");
 
+fn embedExpr(comptime name: []const u8) [:0]const u8 {
+    return @embedFile("nix/" ++ name ++ ".nix");
+}
+
+const ExprBinding = struct {
+    identifier: []const u8,
+    value: []const u8,
+};
+
+/// `bindings` must not have a `lib`.
+fn libLeaf(allocator: std.mem.Allocator, comptime name: []const u8, extra_bindings: []const ExprBinding) !std.ArrayListUnmanaged(u8) {
+    var expr = std.ArrayListUnmanaged(u8){};
+
+    // using `with` instead of a `let` block so that
+    // `lib` and `bindings` have no access to anything else
+    try expr.appendSlice(allocator, "with {\n");
+
+    inline for (.{
+        [_]ExprBinding{
+            .{ .identifier = "lib", .value = embedExpr("lib") },
+        },
+        extra_bindings,
+    }) |bindings|
+        for (bindings) |binding| {
+            const eq = " = ";
+            const term = ";\n";
+
+            try expr.ensureUnusedCapacity(allocator, binding.identifier.len + eq.len + binding.value.len + term.len);
+
+            expr.appendSliceAssumeCapacity(binding.identifier);
+            expr.appendSliceAssumeCapacity(eq);
+            expr.appendSliceAssumeCapacity(binding.value);
+            expr.appendSliceAssumeCapacity(term);
+        };
+
+    try expr.appendSlice(allocator, "};\n");
+    try expr.appendSlice(allocator, embedExpr(name));
+
+    return expr;
+}
+
+/// A nix expression function that takes a flake and evaluates to the output of the `hydra-eval-jobs` executable.
+pub const hydraEvalJobs = expr: {
+    var buf: [4602]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const allocator = fba.allocator();
+
+    var expr = libLeaf(allocator, "hydra-eval-jobs", &.{}) catch |err| @compileError(@errorName(err));
+    break :expr expr.toOwnedSliceSentinel(allocator, 0) catch |err| @compileError(@errorName(err));
+};
+
+/// Returns a new expression that evaluates to a list of derivations
+/// that are found in the given expression.
+pub fn recurseForDerivations(allocator: std.mem.Allocator, expression: []const u8) !std.ArrayListUnmanaged(u8) {
+    return libLeaf(
+        allocator,
+        "recurseForDerivations",
+        &.{
+            .{ .identifier = "expression", .value = expression },
+        },
+    );
+}
+
+test recurseForDerivations {
+    // this test spawns a process
+    if (true) return error.SkipZigTest;
+
+    const expr = expr: {
+        var expr = try recurseForDerivations(std.testing.allocator,
+            \\let
+            \\  mkDerivation = name: builtins.derivation {
+            \\    inherit name;
+            \\    system = "dummy";
+            \\    builder = "dummy";
+            \\  };
+            \\in [
+            \\  (mkDerivation "a")
+            \\  [(mkDerivation "b")]
+            \\  {c = mkDerivation "c";}
+            \\  {
+            \\    recurseForDerivations = true;
+            \\    a = {
+            \\      recurseForDerivations = false;
+            \\      d = mkDerivation "d";
+            \\    };
+            \\    b = {e = mkDerivation "e";};
+            \\    c = [(mkDerivation "f")];
+            \\  }
+            \\]
+        );
+        break :expr try expr.toOwnedSlice(std.testing.allocator);
+    };
+    defer std.testing.allocator.free(expr);
+
+    const result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{
+            "nix",
+            "eval",
+            "--restrict-eval",
+            "--expr",
+            expr,
+            "--raw",
+            "--apply",
+            \\drvs: builtins.concatStringsSep "\n" (map (drv: drv.name) drvs)
+        },
+    });
+    defer {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+    }
+
+    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, result.term);
+    try std.testing.expectEqualStrings(
+        \\a
+        \\b
+        \\c
+        \\e
+    , result.stdout);
+    try std.testing.expectEqualStrings("", result.stderr);
+}
+
 /// Output of `nix flake metadata --json`.
 pub const FlakeMetadata = struct {
     description: ?[]const u8 = null,
