@@ -50,7 +50,12 @@ pub const hydraEvalJobs = expr: {
     const allocator = fba.allocator();
 
     var expr = libLeaf(allocator, "hydra-eval-jobs", &.{}) catch |err| @compileError(@errorName(err));
-    break :expr expr.toOwnedSliceSentinel(allocator, 0) catch |err| @compileError(@errorName(err));
+    defer expr.deinit(allocator);
+
+    var expr_buf: [expr.items.len:0]u8 = undefined;
+    @memcpy(&expr_buf, expr.items);
+
+    break :expr expr_buf;
 };
 
 /// Returns a new expression that evaluates to a list of derivations
@@ -202,7 +207,7 @@ pub const FlakeMetadata = struct {
 
             const url = if (self.url) |url| try std.Uri.parse(url) else null;
 
-            var result = if (url) |u| u else std.Uri{ .scheme = "", .path = "" };
+            var result = if (url) |u| u else std.Uri{ .scheme = "" };
 
             result.scheme = switch (self.type) {
                 .indirect => "flake",
@@ -219,10 +224,10 @@ pub const FlakeMetadata = struct {
                     if (self.ref) |ref| try parts.append(alloc, ref);
                     if (self.rev) |rev| try parts.append(alloc, rev);
 
-                    break :path try std.mem.join(alloc, "/", parts.items);
+                    break :path .{ .percent_encoded = try std.mem.join(alloc, "/", parts.items) };
                 },
-                .path, .tarball, .file => self.path.?,
-                .github, .gitlab, .sourcehut => try std.mem.join(
+                .path, .tarball, .file => .{ .percent_encoded = self.path.? },
+                .github, .gitlab, .sourcehut => .{ .percent_encoded = try std.mem.join(
                     alloc,
                     "/",
                     if (self.ref) |ref|
@@ -231,7 +236,7 @@ pub const FlakeMetadata = struct {
                         &.{ self.owner.?, self.repo.?, rev }
                     else
                         &.{ self.owner.?, self.repo.? },
-                ),
+                ) },
                 .git, .mercurial => url.?.path,
             };
             result.query = query: {
@@ -255,7 +260,7 @@ pub const FlakeMetadata = struct {
                 errdefer query.deinit(alloc);
 
                 if (url) |u| if (u.query) |url_query| {
-                    try query.appendSlice(alloc, url_query);
+                    try url_query.format("raw", .{}, query.writer(alloc));
                     try query.append(alloc, '&');
                 };
 
@@ -274,7 +279,7 @@ pub const FlakeMetadata = struct {
                     }
                 }
 
-                break :query try query.toOwnedSlice(alloc);
+                break :query .{ .percent_encoded = try query.toOwnedSlice(alloc) };
             };
 
             return result;
@@ -388,8 +393,8 @@ pub const FlakeMetadata = struct {
             if (switch (self.type) {
                 .github => std.Uri{
                     .scheme = "https",
-                    .host = self.host orelse "github.com",
-                    .path = try std.mem.concat(arena_allocator, u8, &.{
+                    .host = .{ .percent_encoded = self.host orelse "github.com" },
+                    .path = .{ .percent_encoded = try std.mem.concat(arena_allocator, u8, &.{
                         "/",
                         self.owner.?,
                         "/",
@@ -399,7 +404,7 @@ pub const FlakeMetadata = struct {
                         "/",
                         self.ref orelse self.rev.?,
                         ".tar.gz",
-                    }),
+                    }) },
                 },
                 // TODO gitlab
                 // TODO sourcehut
