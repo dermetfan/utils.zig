@@ -14,7 +14,7 @@ pub const Value = union(enums.Merged(&.{
     f64: f64,
     v128: @Vector(128 / 8, u8),
     funcref: *const anyopaque,
-    externref: ?*const anyopaque,
+    externref: *const anyopaque,
 
     pub const Type = std.meta.Tag(@This());
 };
