@@ -172,7 +172,8 @@ pub const FlakeMetadata = struct {
         }
 
         pub fn locked(self: @This()) bool {
-            return self.lastModified != null;
+            return self.lastModified != null or
+                self.type == .path and self.narHash != null;
         }
 
         // TODO do we already check all possible constraints?
@@ -607,6 +608,13 @@ pub fn impl(
             defer json.deinit();
 
             return try std.json.parseFromValue(FlakeMetadata.Locks, allocator, json.value, json_options);
+        }
+
+        test "flakeMetadataLocks: cardano-db-sync/13.0.4" {
+            // this test needs internet and spawns child processes
+            if (true) return error.SkipZigTest;
+
+            if (try flakeMetadataLocks(std.testing.allocator, "github:IntersectMBO/cardano-db-sync/13.0.4", .{ .refresh = false })) |locks| locks.deinit();
         }
 
         pub fn lockFlakeRef(allocator: std.mem.Allocator, flake_ref: []const u8, opts: FlakeMetadataOptions) ![]const u8 {
