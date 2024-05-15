@@ -8,7 +8,7 @@ flake: let
       else if builtins.isList attr
       then builtins.concatStringsSep ", " (map (elem: stringProp elem subAttr) attr)
       else if builtins.isAttrs attr
-      then toString attr.${subAttr}
+      then toString attr.${subAttr} or ""
       else "";
   in
     drv:
