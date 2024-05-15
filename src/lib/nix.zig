@@ -171,11 +171,6 @@ pub const FlakeMetadata = struct {
             return self.narHash != null or self.rev != null;
         }
 
-        pub fn locked(self: @This()) bool {
-            return self.lastModified != null or
-                self.type == .path and self.narHash != null;
-        }
-
         // TODO do we already check all possible constraints?
         pub fn valid(self: @This()) bool {
             return switch (self.type) {
@@ -463,7 +458,7 @@ pub const FlakeMetadata = struct {
                 } else null;
                 const locked = if (source.object.get("locked")) |locked| try std.json.parseFromValueLeaky(Source, allocator, locked, options) else null;
                 if (locked) |l| {
-                    if (!l.locked()) return error.MissingField;
+                    if (!l.immutable()) return error.MissingField;
                     std.debug.assert(l.valid());
                 }
                 const original = if (source.object.get("original")) |original| try std.json.parseFromValueLeaky(Source, allocator, original, options) else null;
