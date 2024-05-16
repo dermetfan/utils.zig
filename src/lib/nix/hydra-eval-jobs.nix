@@ -6,7 +6,16 @@ flake: let
       if builtins.isString attr
       then attr
       else if builtins.isList attr
-      then builtins.concatStringsSep ", " (map (elem: stringProp elem subAttr) attr)
+      then
+        builtins.concatStringsSep ", " (
+          builtins.filter
+          (value: value != "")
+          (
+            map
+            (elem: stringProp elem subAttr)
+            attr
+          )
+        )
       else if builtins.isAttrs attr
       then toString attr.${subAttr} or ""
       else "";
