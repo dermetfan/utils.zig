@@ -499,6 +499,24 @@ pub fn impl(
     const log = if (log_scope) |scope| std.log.scoped(scope) else std.log;
 
     return struct {
+        pub fn version(allocator: std.mem.Allocator) (std.process.Child.RunError || error{ InvalidVersion, Overflow, UnknownNixVersion })!std.SemanticVersion {
+            const result = try std.process.Child.run(.{
+                .allocator = allocator,
+                .argv = &.{ "nix", "eval", "--raw", "--expr", "builtins.nixVersion" },
+            });
+            defer {
+                allocator.free(result.stdout);
+                allocator.free(result.stderr);
+            }
+
+            if (result.term != .Exited or result.term.Exited != 0) {
+                log.warn("could not get nix version:\nstdout: {s}\nstderr: {s}", .{ result.stdout, result.stderr });
+                return error.UnknownNixVersion;
+            }
+
+            return std.SemanticVersion.parse(result.stdout);
+        }
+
         pub fn flakeMetadata(
             allocator: std.mem.Allocator,
             flake: []const u8,
