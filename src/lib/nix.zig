@@ -207,8 +207,8 @@ pub const FlakeMetadata = struct {
 
             result.scheme = switch (self.type) {
                 .indirect => "flake",
-                .git => try std.mem.concat(alloc, u8, &.{ "git+", url.?.scheme }),
                 .mercurial => try std.mem.concat(alloc, u8, &.{ "hg+", url.?.scheme }),
+                .git, .tarball, .file => try std.mem.concat(alloc, u8, &.{ @tagName(self.type), "+", url.?.scheme }),
                 else => @tagName(self.type),
             };
             result.path = switch (self.type) {
@@ -222,7 +222,7 @@ pub const FlakeMetadata = struct {
 
                     break :path .{ .percent_encoded = try std.mem.join(alloc, "/", parts.items) };
                 },
-                .path, .tarball, .file => .{ .percent_encoded = self.path.? },
+                .path => .{ .percent_encoded = self.path.? },
                 .github, .gitlab, .sourcehut => .{ .percent_encoded = try std.mem.join(
                     alloc,
                     "/",
@@ -233,7 +233,7 @@ pub const FlakeMetadata = struct {
                     else
                         &.{ self.owner.?, self.repo.? },
                 ) },
-                .git, .mercurial => url.?.path,
+                .git, .mercurial, .tarball, .file => url.?.path,
             };
             result.query = query: {
                 var query_args = std.StringArrayHashMapUnmanaged([]const u8){};
@@ -300,16 +300,6 @@ pub const FlakeMetadata = struct {
                 .path = "/cizero",
                 .dir = "nix",
             }).toUrl(allocator)});
-            try std.testing.expectFmt("tarball:/cizero.tar.gz?dir=nix", "{}", .{try (Source{
-                .type = .tarball,
-                .path = "/cizero.tar.gz",
-                .dir = "nix",
-            }).toUrl(allocator)});
-            try std.testing.expectFmt("file:/cizero?dir=nix", "{}", .{try (Source{
-                .type = .file,
-                .path = "/cizero",
-                .dir = "nix",
-            }).toUrl(allocator)});
 
             try std.testing.expectFmt("git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1", "{}", .{try (Source{
                 .type = .git,
@@ -318,6 +308,14 @@ pub const FlakeMetadata = struct {
             try std.testing.expectFmt("hg+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1", "{}", .{try (Source{
                 .type = .mercurial,
                 .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1",
+            }).toUrl(allocator)});
+            try std.testing.expectFmt("tarball+https://example.com:42/cizero.tar.gz?dir=nix", "{}", .{try (Source{
+                .type = .tarball,
+                .url = "https://example.com:42/cizero.tar.gz?dir=nix",
+            }).toUrl(allocator)});
+            try std.testing.expectFmt("file+https://example.com:42/cizero.tar.gz?dir=nix", "{}", .{try (Source{
+                .type = .file,
+                .url = "https://example.com:42/cizero.tar.gz?dir=nix",
             }).toUrl(allocator)});
 
             try std.testing.expectFmt("git+file:/cizero?submodules=1", "{}", .{try (Source{
