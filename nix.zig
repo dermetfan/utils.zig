@@ -479,6 +479,22 @@ pub const FlakeMetadata = struct {
     };
 };
 
+pub const ChildProcessDiagnostics = struct {
+    term: std.process.Child.Term,
+    stderr: []u8,
+
+    fn fromRunResult(result: std.process.Child.RunResult) @This() {
+        return .{
+            .term = result.term,
+            .stderr = result.stderr,
+        };
+    }
+
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.stderr);
+    }
+};
+
 pub const FlakeMetadataOptions = struct {
     max_output_bytes: usize = 50 * 1024,
     refresh: bool = true,
@@ -519,6 +535,7 @@ pub fn impl(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakeMetadataOptions,
+            diagnostics: *?ChildProcessDiagnostics,
         ) !std.json.Parsed(FlakeMetadata) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
@@ -540,15 +557,14 @@ pub fn impl(
                 .max_output_bytes = opts.max_output_bytes,
                 .argv = argv,
             });
-            defer {
-                allocator.free(result.stdout);
-                allocator.free(result.stderr);
-            }
+            defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
                 log.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
+                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.FlakeMetadataFailed; // TODO return more specific error
             }
+            defer allocator.free(result.stderr);
 
             const json_options = .{ .ignore_unknown_fields = true };
 
@@ -563,6 +579,7 @@ pub fn impl(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakePrefetchOptions,
+            diagnostics: *?ChildProcessDiagnostics,
         ) !?std.json.Parsed(FlakeMetadata.Locks) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
@@ -586,15 +603,14 @@ pub fn impl(
                 .max_output_bytes = opts.max_output_bytes,
                 .argv = argv,
             });
-            defer {
-                allocator.free(result.stdout);
-                allocator.free(result.stderr);
-            }
+            defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
                 log.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
+                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.FlakePrefetchFailed; // TODO return more specific error
             }
+            defer allocator.free(result.stderr);
 
             const json_options = .{ .ignore_unknown_fields = true };
 
@@ -628,10 +644,15 @@ pub fn impl(
             if (try flakeMetadataLocks(std.testing.allocator, "github:IntersectMBO/cardano-db-sync/13.0.4", .{ .refresh = false })) |locks| locks.deinit();
         }
 
-        pub fn lockFlakeRef(allocator: std.mem.Allocator, flake_ref: []const u8, opts: FlakeMetadataOptions) ![]const u8 {
+        pub fn lockFlakeRef(
+            allocator: std.mem.Allocator,
+            flake_ref: []const u8,
+            opts: FlakeMetadataOptions,
+            diagnostics: *?ChildProcessDiagnostics,
+        ) ![]const u8 {
             const flake = std.mem.sliceTo(flake_ref, '#');
 
-            const metadata = try flakeMetadata(allocator, flake, opts);
+            const metadata = try flakeMetadata(allocator, flake, opts, diagnostics);
             defer metadata.deinit();
 
             const flake_ref_locked = try std.mem.concat(allocator, u8, &.{
@@ -652,16 +673,20 @@ pub fn impl(
             const expected = latest ++ "/057f9aecfb71c4437d2b27d3323df7f93c010b7e";
 
             {
-                const locked = try lockFlakeRef(std.testing.allocator, input, .{});
+                var diagnostics: ?ChildProcessDiagnostics = null;
+                const locked = try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
                 defer std.testing.allocator.free(locked);
 
+                try std.testing.expect(diagnostics == null);
                 try std.testing.expectEqualStrings(expected, locked);
             }
 
             {
-                const locked = try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{});
+                var diagnostics: ?ChildProcessDiagnostics = null;
+                const locked = try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
                 defer std.testing.allocator.free(locked);
 
+                try std.testing.expect(diagnostics == null);
                 try std.testing.expectEqualStrings(expected ++ "#hello^out", locked);
             }
         }
