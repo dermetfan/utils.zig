@@ -495,6 +495,124 @@ pub const ChildProcessDiagnostics = struct {
     }
 };
 
+pub const Config = struct {
+    @"accept-flake-config": Option(bool),
+    @"access-tokens": Option(std.json.ArrayHashMap([]const u8)),
+    @"allow-dirty": Option(bool),
+    @"allow-import-from-derivation": Option(bool),
+    @"allow-new-privileges": Option(bool),
+    @"allow-symlinked-store": Option(bool),
+    @"allow-unsafe-native-code-during-evaluation": Option(bool),
+    @"allowed-impure-host-deps": Option([]const []const u8),
+    @"allowed-uris": Option([]const []const u8),
+    @"allowed-users": Option([]const []const u8),
+    @"always-allow-substitutes": Option(bool),
+    @"auto-allocate-uids": Option(bool),
+    @"auto-optimise-store": Option(bool),
+    @"bash-prompt": Option([]const u8),
+    @"bash-prompt-prefix": Option([]const u8),
+    @"bash-prompt-suffix": Option([]const u8),
+    @"build-hook": Option([]const []const u8),
+    @"build-poll-interval": Option(u16),
+    @"build-users-group": Option([]const u8),
+    builders: Option([]const u8),
+    @"builders-use-substitutes": Option(bool),
+    @"commit-lockfile-summary": Option([]const u8),
+    @"compress-build-log": Option(bool),
+    @"connect-timeout": Option(u16),
+    cores: Option(u16),
+    @"diff-hook": Option(?[]const u8),
+    @"download-attempts": Option(u16),
+    @"download-speed": Option(u32),
+    @"eval-cache": Option(bool),
+    @"experimental-features": Option([]const []const u8),
+    @"extra-platforms": Option([]const []const u8),
+    fallback: Option(bool),
+    @"filter-syscalls": Option(bool),
+    @"flake-registry": Option([]const u8),
+    @"fsync-metadata": Option(bool),
+    @"gc-reserved-space": Option(u64),
+    @"hashed-mirrors": Option([]const []const u8),
+    @"http-connections": Option(u16),
+    http2: Option(bool),
+    @"id-count": Option(u32),
+    @"ignore-try": Option(bool),
+    @"ignored-acls": Option([]const []const u8),
+    @"impersonate-linux-26": Option(bool),
+    @"impure-env": Option(std.json.ArrayHashMap([]const u8)),
+    @"keep-build-log": Option(bool),
+    @"keep-derivations": Option(bool),
+    @"keep-env-derivations": Option(bool),
+    @"keep-failed": Option(bool),
+    @"keep-going": Option(bool),
+    @"keep-outputs": Option(bool),
+    @"log-lines": Option(u32),
+    @"max-build-log-size": Option(u64),
+    @"max-free": Option(u64),
+    @"max-jobs": Option(u16),
+    @"max-silent-time": Option(u32),
+    @"max-substitution-jobs": Option(u16),
+    @"min-free": Option(u64),
+    @"min-free-check-interval": Option(u16),
+    @"nar-buffer-size": Option(u32),
+    @"narinfo-cache-negative-ttl": Option(u32),
+    @"narinfo-cache-positive-ttl": Option(u32),
+    @"netrc-file": Option([]const u8),
+    @"nix-path": Option([]const []const u8),
+    @"plugin-files": Option([]const []const u8),
+    @"post-build-hook": Option([]const u8),
+    @"pre-build-hook": Option([]const u8),
+    @"preallocate-contents": Option(bool),
+    @"print-missing": Option(bool),
+    @"pure-eval": Option(bool),
+    @"require-drop-supplementary-groups": Option(bool),
+    @"require-sigs": Option(bool),
+    @"restrict-eval": Option(bool),
+    @"run-diff-hook": Option(bool),
+    sandbox: Option(bool),
+    @"sandbox-build-dir": Option([]const u8),
+    @"sandbox-dev-shm-size": Option([]const u8),
+    @"sandbox-fallback": Option(bool),
+    @"sandbox-paths": Option([]const []const u8),
+    @"secret-key-files": Option([]const []const u8),
+    @"show-trace": Option(bool),
+    @"ssl-cert-file": Option([]const u8),
+    @"stalled-download-timeout": Option(u16),
+    @"start-id": Option(u32),
+    store: Option([]const u8),
+    substitute: Option(bool),
+    substituters: Option([]const []const u8),
+    @"sync-before-registering": Option(bool),
+    system: Option([]const u8),
+    @"system-features": Option([]const []const u8),
+    @"tarball-ttl": Option(u16),
+    timeout: Option(u16),
+    @"trace-function-calls": Option(bool),
+    @"trace-verbose": Option(bool),
+    @"trusted-public-keys": Option([]const []const u8),
+    @"trusted-substituters": Option([]const []const u8),
+    @"trusted-users": Option([]const []const u8),
+    @"upgrade-nix-store-path-url": Option([]const u8),
+    @"use-case-hack": Option(bool),
+    @"use-cgroups": Option(bool),
+    @"use-registries": Option(bool),
+    @"use-sqlite-wal": Option(bool),
+    @"use-xdg-base-directories": Option(bool),
+    @"user-agent-suffix": Option([]const u8),
+    @"warn-dirty": Option(bool),
+
+    pub fn Option(comptime T: type) type {
+        return struct {
+            aliases: []const []const u8,
+            defaultValue: T,
+            description: []const u8,
+            documentDefault: bool,
+            experimentalFeature: ?[]const u8,
+            value: T,
+        };
+    }
+};
+
 pub const FlakeMetadataOptions = struct {
     max_output_bytes: usize = 50 * 1024,
     refresh: bool = true,
@@ -529,6 +647,26 @@ pub fn impl(
             }
 
             return std.SemanticVersion.parse(result.stdout);
+        }
+
+        pub fn config(allocator: std.mem.Allocator, diagnostics: *?ChildProcessDiagnostics) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
+            const result = try std.process.Child.run(.{
+                .allocator = allocator,
+                .max_output_bytes = 100 * 1024,
+                .argv = &.{ "nix", "show-config", "--json" },
+            });
+            defer allocator.free(result.stdout);
+
+            if (result.term != .Exited or result.term.Exited != 0) {
+                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
+                return error.CouldNotReadNixConfig;
+            }
+            allocator.free(result.stderr);
+
+            return std.json.parseFromSlice(Config, allocator, result.stdout, .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            });
         }
 
         pub fn flakeMetadata(
