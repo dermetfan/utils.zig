@@ -674,6 +674,7 @@ pub fn impl(
 
             {
                 var diagnostics: ?ChildProcessDiagnostics = null;
+                defer if (diagnostics) |d| d.deinit(std.testing.allocator);
                 const locked = try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
                 defer std.testing.allocator.free(locked);
 
@@ -683,6 +684,7 @@ pub fn impl(
 
             {
                 var diagnostics: ?ChildProcessDiagnostics = null;
+                defer if (diagnostics) |d| d.deinit(std.testing.allocator);
                 const locked = try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
                 defer std.testing.allocator.free(locked);
 
