@@ -633,6 +633,116 @@ pub const FlakePrefetchOptions = struct {
     refresh: bool = true,
 };
 
+pub const FailedBuilds = struct {
+    /// derivations that failed to build
+    builds: []const []const u8,
+    /// derivations that have dependencies that failed
+    dependents: []const []const u8,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        for (self.builds) |drv| allocator.free(drv);
+        allocator.free(self.builds);
+
+        for (self.dependents) |drv| allocator.free(drv);
+        allocator.free(self.dependents);
+
+        self.* = undefined;
+    }
+
+    /// Duplicates the slices taken from `stderr` so you can free it after the call.
+    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr: []const u8) !@This() {
+        var builds = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (builds.items) |drv| allocator.free(drv);
+            builds.deinit(allocator);
+        }
+
+        var dependents = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (dependents.items) |drv| allocator.free(drv);
+            dependents.deinit(allocator);
+        }
+
+        var iter = std.mem.splitScalar(u8, stderr, '\n');
+        while (iter.next()) |line| {
+            const readExpected = struct {
+                fn call(reader: anytype, comptime slice: []const u8) !bool {
+                    var buf: [slice.len]u8 = undefined;
+                    const len = reader.readAll(&buf) catch |err|
+                        return if (err == error.EndOfStream) false else err;
+                    return std.mem.eql(u8, buf[0..len], slice);
+                }
+            }.call;
+
+            builds: {
+                var line_stream = std.io.fixedBufferStream(line);
+                const line_reader = line_stream.reader();
+
+                var drv_list = std.ArrayListUnmanaged(u8){};
+                errdefer drv_list.deinit(allocator);
+
+                if (!try readExpected(line_reader, "error: builder for '")) break :builds;
+                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :builds;
+                if (!try readExpected(line_reader, " failed")) break :builds;
+
+                const drv = try drv_list.toOwnedSlice(allocator);
+                errdefer allocator.free(drv);
+
+                try builds.append(allocator, drv);
+            }
+
+            foreign_builds: {
+                var line_stream = std.io.fixedBufferStream(line);
+                const line_reader = line_stream.reader();
+
+                var drv_list = std.ArrayListUnmanaged(u8){};
+                errdefer drv_list.deinit(allocator);
+
+                if (!try readExpected(line_reader, "error: a '")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, " is required to build '")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, ", but I am a '")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
+                if (line_reader.readByte() != error.EndOfStream) break :foreign_builds;
+
+                const drv = try drv_list.toOwnedSlice(allocator);
+                errdefer allocator.free(drv);
+
+                try builds.append(allocator, drv);
+            }
+
+            dependents: {
+                var line_stream = std.io.fixedBufferStream(line);
+                const line_reader = line_stream.reader();
+
+                var drv_list = std.ArrayListUnmanaged(u8){};
+                errdefer drv_list.deinit(allocator);
+
+                if (!try readExpected(line_reader, "error: ")) break :dependents;
+                line_reader.streamUntilDelimiter(std.io.null_writer, ' ', null) catch break :dependents;
+                if (!try readExpected(line_reader, "dependencies of derivation '")) break :dependents;
+                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :dependents;
+                if (!try readExpected(line_reader, " failed to build")) break :dependents;
+
+                const drv = try drv_list.toOwnedSlice(allocator);
+                errdefer allocator.free(drv);
+
+                try dependents.append(allocator, drv);
+            }
+        }
+
+        return .{
+            .builds = try builds.toOwnedSlice(allocator),
+            .dependents = try dependents.toOwnedSlice(allocator),
+        };
+    }
+};
+
 pub fn impl(
     comptime run_fn: anytype,
     comptime log_scope: ?@TypeOf(.enum_literal),
