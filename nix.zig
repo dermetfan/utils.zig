@@ -2,6 +2,15 @@ const std = @import("std");
 
 const meta = @import("meta.zig");
 
+pub const build_hook = @import("nix/build-hook.zig");
+
+/// The Nix internal JSON log message format.
+/// This corresponds to `--log-format internal-json`.
+pub const log = @import("nix/log.zig");
+
+/// The Nix daemon wire protocol format.
+pub const wire = @import("nix/wire.zig");
+
 fn embedExpr(comptime name: []const u8) [:0]const u8 {
     return @embedFile("nix/" ++ name ++ ".nix");
 }
@@ -628,7 +637,7 @@ pub fn impl(
     comptime run_fn: anytype,
     comptime log_scope: ?@TypeOf(.enum_literal),
 ) type {
-    const log = if (log_scope) |scope| std.log.scoped(scope) else std.log;
+    const log_scoped = if (log_scope) |scope| std.log.scoped(scope) else std.log;
 
     return struct {
         pub fn version(allocator: std.mem.Allocator) (std.process.Child.RunError || error{ InvalidVersion, Overflow, UnknownNixVersion })!std.SemanticVersion {
@@ -642,7 +651,7 @@ pub fn impl(
             }
 
             if (result.term != .Exited or result.term.Exited != 0) {
-                log.warn("could not get nix version:\nstdout: {s}\nstderr: {s}", .{ result.stdout, result.stderr });
+                log_scoped.warn("could not get nix version:\nstdout: {s}\nstderr: {s}", .{ result.stdout, result.stderr });
                 return error.UnknownNixVersion;
             }
 
@@ -698,7 +707,7 @@ pub fn impl(
             defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
-                log.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
+                log_scoped.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
                 diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.FlakeMetadataFailed; // TODO return more specific error
             }
@@ -744,7 +753,7 @@ pub fn impl(
             defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
-                log.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
+                log_scoped.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
                 diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.FlakePrefetchFailed; // TODO return more specific error
             }
