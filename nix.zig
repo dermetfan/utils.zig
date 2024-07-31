@@ -681,7 +681,8 @@ pub const FailedBuilds = struct {
                 var drv_list = std.ArrayListUnmanaged(u8){};
                 errdefer drv_list.deinit(allocator);
 
-                if (!try readExpected(line_reader, "error: builder for '")) break :builds;
+                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
+                if (!try readExpected(line_reader, "rror: builder for '")) break :builds;
                 line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :builds;
                 if (!try readExpected(line_reader, " failed")) break :builds;
 
@@ -698,7 +699,8 @@ pub const FailedBuilds = struct {
                 var drv_list = std.ArrayListUnmanaged(u8){};
                 errdefer drv_list.deinit(allocator);
 
-                if (!try readExpected(line_reader, "error: a '")) break :foreign_builds;
+                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
+                if (!try readExpected(line_reader, "rror: a '")) break :foreign_builds;
                 line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
                 if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
                 line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
@@ -723,7 +725,8 @@ pub const FailedBuilds = struct {
                 var drv_list = std.ArrayListUnmanaged(u8){};
                 errdefer drv_list.deinit(allocator);
 
-                if (!try readExpected(line_reader, "error: ")) break :dependents;
+                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
+                if (!try readExpected(line_reader, "rror: ")) break :dependents;
                 line_reader.streamUntilDelimiter(std.io.null_writer, ' ', null) catch break :dependents;
                 if (!try readExpected(line_reader, "dependencies of derivation '")) break :dependents;
                 line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :dependents;
