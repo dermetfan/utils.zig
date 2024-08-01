@@ -56,6 +56,10 @@ test readPadding {
     }
 }
 
+pub fn writePadding(writer: anytype, len: usize) @TypeOf(writer).Error!void {
+    try writer.writeByteNTimes(0, padding(len));
+}
+
 /// Fills the buffer and discards the padding.
 pub fn readPadded(reader: anytype, buf: []u8) ReadError(@TypeOf(reader), false)!void {
     if (try reader.readAll(buf) < buf.len) return error.EndOfStream;
@@ -78,8 +82,20 @@ test readPadded {
     }
 }
 
+pub fn writePadded(writer: anytype, buf: []const u8) @TypeOf(writer).Error!void {
+    try writer.writeAll(buf);
+    try writePadding(writer, buf.len);
+}
+
 pub fn readU64(reader: anytype) ReadError(@TypeOf(reader), false)!u64 {
-    return reader.readInt(u64, .little);
+    const result = try reader.readInt(u64, .little);
+    try readPadding(reader, @sizeOf(u64));
+    return result;
+}
+
+pub fn writeU64(writer: anytype, value: u64) @TypeOf(writer).Error!void {
+    try writer.writeInt(u64, value, .little);
+    try writePadding(writer, @sizeOf(u64));
 }
 
 pub fn readBool(reader: anytype) (ReadError(@TypeOf(reader), false) || error{BadBool})!bool {
@@ -90,11 +106,20 @@ pub fn readBool(reader: anytype) (ReadError(@TypeOf(reader), false) || error{Bad
     };
 }
 
+pub fn writeBool(writer: anytype, value: bool) @TypeOf(writer).Error!void {
+    try writeU64(writer, @intFromBool(value));
+}
+
 pub fn readPacket(allocator: std.mem.Allocator, reader: anytype) ReadError(@TypeOf(reader), true)![]const u8 {
     const buf = try allocator.alloc(u8, try readU64(reader));
     errdefer allocator.free(buf);
     try readPadded(reader, buf);
     return buf;
+}
+
+pub fn writePacket(writer: anytype, packet: []const u8) @TypeOf(writer).Error!void {
+    try writeU64(writer, packet.len);
+    try writePadded(writer, packet);
 }
 
 pub fn readPackets(allocator: std.mem.Allocator, reader: anytype) ReadError(@TypeOf(reader), true)![]const []const u8 {
@@ -107,7 +132,12 @@ pub fn readPackets(allocator: std.mem.Allocator, reader: anytype) ReadError(@Typ
     return bufs;
 }
 
-pub fn readStringStringMap(allocator: std.mem.Allocator, reader: anytype) ReadError(@TypeOf(reader), true)!std.BufMap {
+pub fn writePackets(writer: anytype, packets: []const []const u8) @TypeOf(writer).Error!void {
+    try writeU64(writer, packets.len);
+    for (packets) |packet| try writePacket(writer, packet);
+}
+
+pub fn readStringStringMap(allocator: std.mem.Allocator, reader: anytype) (ReadError(@TypeOf(reader), true) || error{BadBool})!std.BufMap {
     var map = std.BufMap.init(allocator);
     errdefer map.deinit();
 
@@ -124,6 +154,15 @@ pub fn readStringStringMap(allocator: std.mem.Allocator, reader: anytype) ReadEr
     }
 
     return map;
+}
+
+pub fn writeStringStringMap(writer: anytype, map: std.StringHashMapUnmanaged([]const u8)) @TypeOf(writer).Error!void {
+    var iter = map.iterator();
+    while (iter.next()) |entry| {
+        try writeBool(writer, true);
+        try writePacket(writer, entry.key_ptr.*);
+        try writePacket(writer, entry.value_ptr.*);
+    } else try writeBool(writer, false);
 }
 
 /// Reads fields in declaration order.
@@ -162,6 +201,25 @@ pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytyp
     }
 
     return strukt;
+}
+
+pub fn writeStruct(comptime T: type, writer: anytype, value: T) (@TypeOf(writer).Error || error{BadBool})!void {
+    const fields = @typeInfo(T).Struct.fields;
+    inline for (fields) |field| {
+        const field_value = @field(value, field.name);
+        try switch (field.type) {
+            []const u8 => writePacket(writer, field_value),
+            []const []const u8 => writePackets(writer, field_value),
+            u64 => writeU64(writer, field_value),
+            bool => writeBool(writer, field_value),
+            std.BufMap => writeStringStringMap(writer, field_value),
+            std.StringHashMapUnmanaged([]const u8) => if (writeStringStringMap(writer, field_value)) |map|
+                map.hash_map.unmanaged
+            else |err|
+                err,
+            else => @compileError("type \"" ++ @typeName(T) ++ "\" does not exist in the nix protocol"),
+        };
+    }
 }
 
 pub fn expectPacket(comptime expected: []const u8, reader: anytype) (ReadError(@TypeOf(reader), true) || error{UnexpectedPacket})!void {
