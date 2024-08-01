@@ -100,8 +100,8 @@ pub fn writeU64(writer: anytype, value: u64) @TypeOf(writer).Error!void {
 
 pub fn readBool(reader: anytype) (ReadError(@TypeOf(reader), false) || error{BadBool})!bool {
     return switch (try readU64(reader)) {
-        0 => false,
-        1 => true,
+        @intFromBool(false) => false,
+        @intFromBool(true) => true,
         else => error.BadBool,
     };
 }
@@ -141,7 +141,7 @@ pub fn readStringStringMap(allocator: std.mem.Allocator, reader: anytype) (ReadE
     var map = std.BufMap.init(allocator);
     errdefer map.deinit();
 
-    while (try readU64(reader) != 0) {
+    while (try readBool(reader)) {
         const key = try readPacket(allocator, reader);
         errdefer allocator.free(key);
 
