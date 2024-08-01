@@ -51,3 +51,17 @@ test paddingOf {
     try std.testing.expectEqual(@as(usize, 0), paddingOf(u32));
     try std.testing.expectEqual(@as(usize, 3), paddingOf(u33));
 }
+
+pub fn copySlicesForwards(comptime T: type, dest: []T, sources: []const []const T) void {
+    var i: usize = 0;
+    for (sources) |source| {
+        std.mem.copyForwards(T, dest[i .. i + source.len], source);
+        i += source.len;
+    }
+}
+
+test copySlicesForwards {
+    var dest: [10]u8 = undefined;
+    copySlicesForwards(u8, &dest, &.{ "01234", "56789" });
+    try std.testing.expectEqualStrings("0123456789", &dest);
+}
