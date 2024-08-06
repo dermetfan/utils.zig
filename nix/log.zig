@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const stderr = std.io.getStdErr().writer();
+const stderr_mutex = std.debug.getStderrMutex();
 
 const prefix = "@nix ";
 
@@ -145,36 +146,35 @@ pub const Action = union(enum) {
         try write_stream.endObject();
     }
 
-    fn logTo(self: @This(), writer: anytype) !void {
+    fn logTo(self: @This(), writer: anytype, writer_mutex: *std.Thread.Mutex) !void {
+        writer_mutex.lock();
+        defer writer_mutex.unlock();
+
         try writer.writeAll(prefix);
         try std.json.stringify(self, .{}, writer);
         try writer.writeByte('\n');
     }
 
     pub fn log(self: @This()) !void {
-        const stderr_mutex = std.debug.getStderrMutex();
-        stderr_mutex.lock();
-        defer stderr_mutex.unlock();
-
-        try self.logTo(stderr);
+        try self.logTo(stderr, stderr_mutex);
     }
 };
 
-fn logMsgTo(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype, writer: anytype) !void {
+fn logMsgTo(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype, writer: anytype, writer_mutex: *std.Thread.Mutex) !void {
     const message = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(message);
 
     try (Action{ .msg = .{
         .level = level,
         .msg = message,
-    } }).logTo(writer);
+    } }).logTo(writer, writer_mutex);
 }
 
 pub fn logMsg(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype) !void {
-    try logMsgTo(allocator, level, fmt, args, stderr);
+    try logMsgTo(allocator, level, fmt, args, stderr, stderr_mutex);
 }
 
-fn logErrorInfoTo(allocator: std.mem.Allocator, level: Action.Verbosity, err: anyerror, comptime fmt: []const u8, args: anytype, writer: anytype) !void {
+fn logErrorInfoTo(allocator: std.mem.Allocator, level: Action.Verbosity, err: anyerror, comptime fmt: []const u8, args: anytype, writer: anytype, writer_mutex: anytype) !void {
     const msg = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(msg);
 
@@ -182,11 +182,11 @@ fn logErrorInfoTo(allocator: std.mem.Allocator, level: Action.Verbosity, err: an
         .level = level,
         .msg = msg,
         .raw_msg = @errorName(err),
-    } }).logTo(writer);
+    } }).logTo(writer, writer_mutex);
 }
 
 pub fn logErrorInfo(allocator: std.mem.Allocator, level: Action.Verbosity, err: anyerror, comptime fmt: []const u8, args: anytype) !void {
-    try logErrorInfoTo(allocator, level, err, fmt, args, stderr);
+    try logErrorInfoTo(allocator, level, err, fmt, args, stderr, stderr_mutex);
 }
 
 test Action {
@@ -195,15 +195,16 @@ test Action {
     var testing_stderr = std.ArrayList(u8).init(allocator);
     defer testing_stderr.deinit();
     const testing_stderr_writer = testing_stderr.writer();
+    var testing_stderr_mutex = std.Thread.Mutex{};
 
-    try logMsgTo(allocator, .info, "log {d}", .{1}, testing_stderr_writer);
+    try logMsgTo(allocator, .info, "log {d}", .{1}, testing_stderr_writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"msg","level":3,"msg":"log 1"}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
 
-    try logErrorInfoTo(allocator, .info, error.Foobar, "error_info {d}", .{1}, testing_stderr_writer);
+    try logErrorInfoTo(allocator, .info, error.Foobar, "error_info {d}", .{1}, testing_stderr_writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"msg","level":3,"msg":"error_info 1","raw_msg":"Foobar"}
         \\
@@ -220,14 +221,14 @@ test Action {
             .{ .int = 4 },
             .{ .string = "str" },
         },
-    } }).logTo(testing_stderr_writer);
+    } }).logTo(testing_stderr_writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"start","id":1,"level":3,"type":106,"text":"start_activity","parent":0,"fields":[4,"str"]}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
 
-    try (Action{ .stop_activity = 1 }).logTo(testing_stderr_writer);
+    try (Action{ .stop_activity = 1 }).logTo(testing_stderr_writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"stop","id":1}
         \\
@@ -241,7 +242,7 @@ test Action {
             .{ .int = 4 },
             .{ .string = "str" },
         },
-    } }).logTo(testing_stderr_writer);
+    } }).logTo(testing_stderr_writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"result","id":1,"type":105,"fields":[4,"str"]}
         \\
