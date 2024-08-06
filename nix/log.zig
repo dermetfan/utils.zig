@@ -2,13 +2,15 @@ const std = @import("std");
 
 const stderr = std.io.getStdErr().writer();
 
+const prefix = "@nix ";
+
 pub fn logFn(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.EnumLiteral),
     comptime format: []const u8,
     args: anytype,
 ) void {
-    const prefix =
+    const meta =
         "[" ++ comptime level.asText() ++ "] " ++
         if (scope != .default) "(" ++ @tagName(scope) ++ ") " else "";
 
@@ -25,8 +27,8 @@ pub fn logFn(
         .debug => .debug,
     };
 
-    logMsg(allocator, verbosity, prefix ++ format, args) catch |err|
-        std.debug.panic("could not log: {}", .{err});
+    logMsg(allocator, verbosity, meta ++ format, args) catch |err|
+        std.debug.panic("{s}: could not log", .{@errorName(err)});
 }
 
 // Translated from `src/libutil/logging.hh`.
@@ -144,7 +146,7 @@ pub const Action = union(enum) {
     }
 
     fn logTo(self: @This(), writer: anytype) !void {
-        try writer.writeAll("@nix ");
+        try writer.writeAll(prefix);
         try std.json.stringify(self, .{}, writer);
         try writer.writeByte('\n');
     }
@@ -195,15 +197,15 @@ test Action {
     const testing_stderr_writer = testing_stderr.writer();
 
     try logMsgTo(allocator, .info, "log {d}", .{1}, testing_stderr_writer);
-    try std.testing.expectEqualStrings(
-        \\@nix {"action":"msg","level":3,"msg":"log 1"}
+    try std.testing.expectEqualStrings(prefix ++
+        \\{"action":"msg","level":3,"msg":"log 1"}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
 
     try logErrorInfoTo(allocator, .info, error.Foobar, "error_info {d}", .{1}, testing_stderr_writer);
-    try std.testing.expectEqualStrings(
-        \\@nix {"action":"msg","level":3,"msg":"error_info 1","raw_msg":"Foobar"}
+    try std.testing.expectEqualStrings(prefix ++
+        \\{"action":"msg","level":3,"msg":"error_info 1","raw_msg":"Foobar"}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
@@ -219,15 +221,15 @@ test Action {
             .{ .string = "str" },
         },
     } }).logTo(testing_stderr_writer);
-    try std.testing.expectEqualStrings(
-        \\@nix {"action":"start","id":1,"level":3,"type":106,"text":"start_activity","parent":0,"fields":[4,"str"]}
+    try std.testing.expectEqualStrings(prefix ++
+        \\{"action":"start","id":1,"level":3,"type":106,"text":"start_activity","parent":0,"fields":[4,"str"]}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
 
     try (Action{ .stop_activity = 1 }).logTo(testing_stderr_writer);
-    try std.testing.expectEqualStrings(
-        \\@nix {"action":"stop","id":1}
+    try std.testing.expectEqualStrings(prefix ++
+        \\{"action":"stop","id":1}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
@@ -240,9 +242,137 @@ test Action {
             .{ .string = "str" },
         },
     } }).logTo(testing_stderr_writer);
-    try std.testing.expectEqualStrings(
-        \\@nix {"action":"result","id":1,"type":105,"fields":[4,"str"]}
+    try std.testing.expectEqualStrings(prefix ++
+        \\{"action":"result","id":1,"type":105,"fields":[4,"str"]}
         \\
     , testing_stderr.items);
     testing_stderr.clearRetainingCapacity();
+}
+
+/// Writes bytes that are not part of Nix' `--log-format internal-json` to `DiscardWriter`.
+pub fn LogStream(comptime InnerReader: type, comptime DiscardWriter: type) type {
+    return struct {
+        inner_reader: InnerReader,
+        discard_writer: DiscardWriter,
+        state: union(enum) {
+            /// The last byte read was a newline or part of the prefix.
+            /// We are now expecting the byte at this index in the prefix.
+            unknown: PrefixIndex,
+            /// The prefix has been read and on the next read we will write
+            /// this index in the prefix to the output buffer.
+            prefix: PrefixIndex,
+            /// The last byte read was part of a log message.
+            inside,
+            /// The last byte read was not part of a log message.
+            outside,
+        } = .{ .unknown = 0 },
+
+        const PrefixIndex = std.math.IntFittingRange(0, prefix.len - 1);
+
+        pub const Error = InnerReader.NoEofError || DiscardWriter.Error;
+        pub const Reader = std.io.Reader(*@This(), Error, read);
+
+        pub fn read(self: *@This(), buf: []u8) Error!usize {
+            var buf_idx: usize = 0;
+            while (buf_idx < buf.len) {
+                switch (self.state) {
+                    .unknown => |prefix_idx| {
+                        const byte = self.inner_reader.readByte() catch |err|
+                            if (err == error.EndOfStream) break else return err;
+
+                        if (prefix[prefix_idx] == byte) {
+                            self.state = if (prefix_idx == prefix.len - 1)
+                                .{ .prefix = 0 }
+                            else
+                                .{ .unknown = prefix_idx + 1 };
+                        } else {
+                            try self.discard_writer.writeAll(prefix[0..prefix_idx]);
+                            try self.discard_writer.writeByte(byte);
+
+                            self.state = if (byte == '\n')
+                                .{ .unknown = 0 }
+                            else
+                                .outside;
+                        }
+                    },
+                    .prefix => |prefix_idx| {
+                        buf[buf_idx] = prefix[prefix_idx];
+                        buf_idx += 1;
+
+                        self.state = if (prefix_idx == prefix.len - 1)
+                            .inside
+                        else
+                            .{ .prefix = prefix_idx + 1 };
+                    },
+                    .inside => {
+                        const byte = self.inner_reader.readByte() catch |err|
+                            if (err == error.EndOfStream) break else return err;
+
+                        buf[buf_idx] = byte;
+                        buf_idx += 1;
+
+                        if (byte == '\n') self.state = .{ .unknown = 0 };
+                    },
+                    .outside => {
+                        const byte = self.inner_reader.readByte() catch |err|
+                            if (err == error.EndOfStream) break else return err;
+
+                        try self.discard_writer.writeByte(byte);
+
+                        if (byte == '\n') self.state = .{ .unknown = 0 };
+                    },
+                }
+            }
+            return buf_idx;
+        }
+
+        pub fn reader(self: *@This()) Reader {
+            return .{ .context = self };
+        }
+    };
+}
+
+test LogStream {
+    const input_buf =
+        prefix ++
+        \\{"foo": 1}
+        \\# postpone
+        \\# decline
+        \\# decline-permanently
+        \\
+    ++ prefix ++
+        \\{"foo": 2}
+        \\# accept
+        \\dummy://
+        \\
+    ;
+    var input_stream = std.io.fixedBufferStream(input_buf);
+
+    var discard_buf: [input_buf.len]u8 = undefined;
+    var discard_stream = std.io.fixedBufferStream(&discard_buf);
+
+    var log_stream = logStream(input_stream.reader(), discard_stream.writer());
+
+    const logs = (try log_stream.reader().readBoundedBytes(input_buf.len)).constSlice();
+
+    try std.testing.expectEqualStrings(prefix ++
+        \\{"foo": 1}
+        \\
+    ++ prefix ++
+        \\{"foo": 2}
+        \\
+    , logs);
+
+    try std.testing.expectEqualStrings(
+        \\# postpone
+        \\# decline
+        \\# decline-permanently
+        \\# accept
+        \\dummy://
+        \\
+    , discard_stream.getWritten());
+}
+
+pub fn logStream(inner_reader: anytype, discard_writer: anytype) LogStream(@TypeOf(inner_reader), @TypeOf(discard_writer)) {
+    return .{ .inner_reader = inner_reader, .discard_writer = discard_writer };
 }
