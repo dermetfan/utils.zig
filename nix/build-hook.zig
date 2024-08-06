@@ -11,6 +11,7 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
     return struct {
         reader: Reader,
         writer: Writer,
+        writer_mutex: *std.Thread.Mutex,
 
         pub fn readDerivation(self: @This(), allocator: std.mem.Allocator) (wire.ReadError(Reader, true) || error{ UnexpectedPacket, BadBool })!Derivation {
             return (try Request.read(allocator, self.reader)).derivation;
@@ -20,6 +21,9 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         /// the last derivation it offers us
         /// so make sure to clean up all resources before calling this function.
         pub fn decline(self: @This()) Writer.Error!void {
+            self.writer_mutex.lock();
+            defer self.writer_mutex.unlock();
+
             try @as(Response, .decline).write(self.writer);
         }
 
@@ -31,7 +35,12 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         /// invokes the [destructor](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libstore/build/hook-instance.cc#L82)
         /// which sends SIGKILL [by default](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libutil/processes.cc#L54) (oof).
         pub fn declinePermanently(self: @This()) Writer.Error!noreturn {
-            try @as(Response, .decline_permanently).write(self.writer);
+            {
+                self.writer_mutex.lock();
+                defer self.writer_mutex.unlock();
+
+                try @as(Response, .decline_permanently).write(self.writer);
+            }
 
             // Make sure we don't return in case the nix daemon
             // does not send SIGKILL fast enough.
@@ -40,6 +49,9 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         }
 
         pub fn postpone(self: @This()) Writer.Error!void {
+            self.writer_mutex.lock();
+            defer self.writer_mutex.unlock();
+
             try @as(Response, .postpone).write(self.writer);
         }
 
@@ -49,7 +61,12 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         ///
         /// The given store URI is displayed to the user but does not otherwise matter.
         pub fn accept(self: *@This(), allocator: std.mem.Allocator, store_uri: []const u8) (wire.ReadError(Reader, true) || Writer.Error || error{BadBool})!BuildIo {
-            try (Response{ .accept = store_uri }).write(self.writer);
+            {
+                self.writer_mutex.lock();
+                defer self.writer_mutex.unlock();
+
+                try (Response{ .accept = store_uri }).write(self.writer);
+            }
             defer self.* = undefined;
 
             return wire.readStruct(BuildIo, allocator, self.reader);
@@ -59,19 +76,21 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
 
 /// Returns the nix config and a connection.
 pub fn start(allocator: std.mem.Allocator) (wire.ReadError(std.fs.File.Reader, true) || std.fs.File.Writer.Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(std.fs.File.Reader, std.fs.File.Writer) } {
-    return startAdvanced(allocator, std.io.getStdIn().reader(), std.io.getStdErr().writer());
+    return startAdvanced(allocator, std.io.getStdIn().reader(), std.io.getStdErr().writer(), std.debug.getStderrMutex());
 }
 
 pub fn startAdvanced(
     allocator: std.mem.Allocator,
     reader: anytype,
     writer: anytype,
+    writer_mutex: *std.Thread.Mutex,
 ) (wire.ReadError(@TypeOf(reader), true) || @TypeOf(writer).Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(@TypeOf(reader), @TypeOf(writer)) } {
     return .{
         try wire.readStringStringMap(allocator, reader),
         .{
             .reader = reader,
             .writer = writer,
+            .writer_mutex = writer_mutex,
         },
     };
 }
