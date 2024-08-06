@@ -13,15 +13,14 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         writer: Writer,
 
         pub fn readDerivation(self: @This(), allocator: std.mem.Allocator) (wire.ReadError(Reader, true) || error{ UnexpectedPacket, BadBool })!Derivation {
-            try wire.expectPacket("try", self.reader);
-            return wire.readStruct(Derivation, allocator, self.reader);
+            return (try Request.read(allocator, self.reader)).derivation;
         }
 
         /// The nix daemon will immediately kill the build hook after we decline
         /// the last derivation it offers us
         /// so make sure to clean up all resources before calling this function.
         pub fn decline(self: @This()) Writer.Error!void {
-            try self.writer.print("# decline\n", .{});
+            try @as(Response, .decline).write(self.writer);
         }
 
         /// The nix daemon will immediately kill the build hook after we decline permanently
@@ -32,7 +31,7 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         /// invokes the [destructor](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libstore/build/hook-instance.cc#L82)
         /// which sends SIGKILL [by default](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libutil/processes.cc#L54) (oof).
         pub fn declinePermanently(self: @This()) Writer.Error!noreturn {
-            try self.writer.print("# decline-permanently\n", .{});
+            try @as(Response, .decline_permanently).write(self.writer);
 
             // Make sure we don't return in case the nix daemon
             // does not send SIGKILL fast enough.
@@ -41,7 +40,7 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         }
 
         pub fn postpone(self: @This()) Writer.Error!void {
-            try self.writer.print("# postpone\n", .{});
+            try @as(Response, .postpone).write(self.writer);
         }
 
         /// The nix daemon will close stdin and wait for EOF from the build hook.
@@ -50,9 +49,9 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
         ///
         /// The given store URI is displayed to the user but does not otherwise matter.
         pub fn accept(self: *@This(), allocator: std.mem.Allocator, store_uri: []const u8) (wire.ReadError(Reader, true) || Writer.Error || error{BadBool})!BuildIo {
+            try (Response{ .accept = store_uri }).write(self.writer);
             defer self.* = undefined;
 
-            try self.writer.print("# accept\n{s}\n", .{store_uri});
             return wire.readStruct(BuildIo, allocator, self.reader);
         }
     };
@@ -118,7 +117,124 @@ pub const BuildIo = struct {
     }
 };
 
-test {
-    _ = log;
-    _ = wire;
-}
+pub const Initialization = struct {
+    nix_config: std.BufMap,
+
+    pub fn read(allocator: std.mem.Allocator, reader: anytype) @TypeOf(reader).NoEofError!@This() {
+        return .{ .nix_config = try wire.readStringStringMap(allocator, reader) };
+    }
+
+    pub fn write(self: @This(), writer: anytype) @TypeOf(writer).Error!void {
+        try wire.writeStringStringMap(writer, self.nix_config.hash_map.unmanaged);
+    }
+};
+
+pub const Request = struct {
+    derivation: Derivation,
+
+    pub fn read(allocator: std.mem.Allocator, reader: anytype) (wire.ReadError(@TypeOf(reader), true) || error{ UnexpectedPacket, BadBool })!@This() {
+        try wire.expectPacket("try", reader);
+        return .{ .derivation = try wire.readStruct(Derivation, allocator, reader) };
+    }
+
+    pub fn write(self: @This(), writer: anytype) (@TypeOf(writer).Error || error{BadBool})!void {
+        try wire.writePacket(writer, "try");
+        try wire.writeStruct(Derivation, writer, self.derivation);
+    }
+};
+
+pub const Response = union((enum {
+    decline,
+    decline_permanently,
+    postpone,
+    accept,
+
+    /// the first line (without the trailing newline)
+    pub fn head(self: @This()) []const u8 {
+        return switch (self) {
+            .decline_permanently => "# decline-permanently",
+            inline else => |v| "# " ++ @tagName(v),
+        };
+    }
+
+    pub fn maxHeadLen() usize {
+        var largest_head: ?[]const u8 = null;
+        for (std.enums.values(@This())) |tag| {
+            if (largest_head) |lh|
+                if (lh.len >= tag.head().len) continue;
+            largest_head = tag.head();
+        }
+        return largest_head.?.len;
+    }
+})) {
+    decline,
+    decline_permanently,
+    postpone,
+    /// the store that the the derivation will be built in
+    accept: []const u8,
+
+    pub const Tag = std.meta.Tag(@This());
+
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        switch (self) {
+            .accept => |store| allocator.free(store),
+            else => {},
+        }
+    }
+
+    pub fn read(allocator: std.mem.Allocator, reader: anytype) (@TypeOf(reader).NoEofError || std.mem.Allocator.Error || error{ BadResponse, NoSpaceLeft, StreamTooLong })!@This() {
+        return switch (tag: {
+            var head_buf: [Tag.maxHeadLen()]u8 = undefined;
+            var head_stream = std.io.fixedBufferStream(&head_buf);
+
+            try reader.streamUntilDelimiter(head_stream.writer(), '\n', head_buf.len + 1);
+
+            for (std.enums.values(Tag)) |tag| {
+                if (std.mem.eql(u8, head_stream.getWritten(), tag.head())) break :tag tag;
+            } else return error.BadResponse;
+        }) {
+            .accept => store: {
+                var store = try std.ArrayList(u8).initCapacity(
+                    allocator,
+                    // Somewhat arbitrary, should fit all stores encountered in practice.
+                    1024 * 2,
+                );
+                errdefer store.deinit();
+
+                try reader.streamUntilDelimiter(store.writer(), '\n', store.capacity);
+
+                break :store .{ .accept = try store.toOwnedSlice() };
+            },
+            inline else => |tag| tag,
+        };
+    }
+
+    test read {
+        const allocator = std.testing.allocator;
+
+        {
+            var stream = std.io.fixedBufferStream(comptime Tag.decline.head() ++ "\n");
+            try std.testing.expectEqual(.decline, try read(allocator, stream.reader()));
+        }
+
+        {
+            var stream = std.io.fixedBufferStream(comptime Tag.accept.head() ++ "\ndummy://\n");
+            const response = try read(allocator, stream.reader());
+            defer response.deinit(allocator);
+            try std.testing.expectEqualDeep(@This(){ .accept = "dummy://" }, response);
+        }
+    }
+
+    pub fn write(self: @This(), writer: anytype) @TypeOf(writer).Error!void {
+        try writer.writeAll(std.meta.activeTag(self).head());
+        try writer.writeByte('\n');
+
+        switch (self) {
+            .accept => |store| {
+                try writer.writeAll(store);
+                try writer.writeByte('\n');
+            },
+            else => {},
+        }
+    }
+};
