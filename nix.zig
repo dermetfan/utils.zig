@@ -746,6 +746,32 @@ pub const FailedBuilds = struct {
     }
 };
 
+pub const StoreInfo = struct {
+    url: []const u8,
+    version: ?std.SemanticVersion = null,
+    trusted: bool = false,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+        const inner = try std.json.innerParse(struct {
+            url: []const u8,
+            version: ?[]const u8 = null,
+            trusted: ?u1 = null,
+        }, allocator, source, options);
+
+        return .{
+            .url = try allocator.dupe(u8, inner.url),
+            .version = if (inner.version) |v|
+                std.SemanticVersion.parse(v) catch |err| return switch (err) {
+                    error.InvalidVersion => error.UnexpectedToken,
+                    else => |e| e,
+                }
+            else
+                null,
+            .trusted = inner.trusted orelse 0 == 1,
+        };
+    }
+};
+
 pub fn impl(
     comptime run_fn: anytype,
     comptime log_scope: ?@TypeOf(.enum_literal),
@@ -951,6 +977,29 @@ pub fn impl(
                 try std.testing.expect(diagnostics == null);
                 try std.testing.expectEqualStrings(expected ++ "#hello^out", locked);
             }
+        }
+
+        pub fn storeInfo(
+            allocator: std.mem.Allocator,
+            store: []const u8,
+            diagnostics: *?ChildProcessDiagnostics,
+        ) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotPingNixStore})!std.json.Parsed(StoreInfo) {
+            const result = try run_fn(.{
+                .allocator = allocator,
+                .argv = &.{ "nix", "store", "info", "--json", "--store", store },
+            });
+            defer allocator.free(result.stdout);
+
+            if (result.term != .Exited or result.term.Exited != 0) {
+                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
+                return error.CouldNotPingNixStore;
+            }
+            allocator.free(result.stderr);
+
+            return std.json.parseFromSlice(StoreInfo, allocator, result.stdout, .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            });
         }
     };
 }
