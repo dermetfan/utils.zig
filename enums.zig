@@ -90,8 +90,8 @@ test Sub {
     const e2_tags = std.meta.tags(E2);
 
     try std.testing.expectEqual(2, e2_tags.len);
-    try std.testing.expectEqualStrings("a", @tagName(e2_tags[0]));
-    try std.testing.expectEqualStrings("c", @tagName(e2_tags[1]));
+    try std.testing.expectEqual(.a, e2_tags[0]);
+    try std.testing.expectEqual(.c, e2_tags[1]);
 }
 
 /// Raises the tag type to the next power of two
