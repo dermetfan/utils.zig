@@ -401,6 +401,30 @@ test EnsurePowBits {
     try std.testing.expectEqual(u8, EnsurePowBits(u8, 8));
 }
 
+pub fn ErrorSetExcluding(comptime ErrorSet: type, comptime errors: []const ErrorSet) type {
+    if (@typeInfo(ErrorSet).ErrorSet) |info| {
+        var new_info: []const std.builtin.Type.Error = &.{};
+        errors: inline for (info) |err| {
+            for (errors) |excluded_err|
+                if (std.mem.eql(u8, err.name, @errorName(excluded_err)))
+                    continue :errors;
+            new_info = new_info ++ .{err};
+        }
+        return @Type(.{ .ErrorSet = new_info });
+    } else if (errors.len != 0)
+        @compileError("cannot exclude errors from an empty error set");
+}
+
+test ErrorSetExcluding {
+    const E1 = error{ A, B, C };
+    const E2 = ErrorSetExcluding(E1, &.{ error.A, error.C });
+
+    const e2_tags = std.meta.tags(E2);
+
+    try std.testing.expectEqual(1, e2_tags.len);
+    try std.testing.expectEqual(error.B, e2_tags[0]);
+}
+
 pub fn FnErrorSet(comptime Fn: type) type {
     const info = @typeInfo(Fn).Fn;
     const ret = info.return_type.?;
