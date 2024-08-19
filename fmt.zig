@@ -1,11 +1,12 @@
 const std = @import("std");
 
-fn formatOneline(str: []const u8, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-    for (str) |char| try switch (char) {
-        '\n' => writer.writeByte(' '),
-        '\r' => {},
-        else => writer.writeByte(char),
-    };
+fn formatOneline(str: []const u8, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    for (str) |char|
+        try std.fmt.formatText(&[1]u8{switch (char) {
+            '\n' => ' ',
+            '\r' => continue,
+            else => char,
+        }}, fmt, options, writer);
 }
 
 pub fn fmtOneline(str: []const u8) std.fmt.Formatter(formatOneline) {
