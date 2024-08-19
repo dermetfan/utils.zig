@@ -40,12 +40,12 @@ pub fn proxyDuplex(
     var poll_fds = [_]posix.pollfd{
         .{
             .fd = downstream,
-            .events = POLL.IN | POLL.OUT,
+            .events = POLL.IN,
             .revents = undefined,
         },
         .{
             .fd = upstream,
-            .events = POLL.IN | POLL.OUT,
+            .events = POLL.IN,
             .revents = undefined,
         },
         .{
@@ -103,6 +103,13 @@ pub fn proxyDuplex(
 
         try fns.handleWriteEnd(poll_fds[0], &fifo_down);
         try fns.handleWriteEnd(poll_fds[1], &fifo_up);
+
+        inline for (.{ &fifo_up, &fifo_down }, .{ &poll_fds[1], &poll_fds[0] }) |fifo, poll_fd| {
+            if (fifo.readableLength() == 0)
+                poll_fd.events &= ~@as(@TypeOf(poll_fd.events), POLL.OUT)
+            else
+                poll_fd.events |= @as(@TypeOf(poll_fd.events), POLL.OUT);
+        }
 
         inline for (poll_fds, 0..) |poll_fd, idx| {
             if (poll_fd.revents & POLL.HUP != 0)
