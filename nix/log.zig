@@ -12,8 +12,9 @@ pub fn logFn(
     args: anytype,
 ) void {
     const meta =
-        "[" ++ comptime level.asText() ++ "] " ++
-        if (scope != .default) "(" ++ @tagName(scope) ++ ") " else "";
+        comptime level.asText() ++
+        (if (scope != .default) "(" ++ @tagName(scope) ++ ")" else "") ++
+        ": ";
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() == .leak) std.debug.panic("could not log memory leak after logging\n", .{});
