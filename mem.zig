@@ -37,6 +37,30 @@ pub const mb_per_tb = 1000 * mb_per_gb;
 // Divisions of a GB.
 pub const gb_per_tb = 1000;
 
+pub const CapFrom = enum { start, end };
+
+pub fn cap(comptime T: type, slice: []T, max_len: usize, from: CapFrom) []T {
+    if (max_len >= slice.len) return slice;
+    return switch (from) {
+        .start => slice[slice.len - max_len ..],
+        .end => slice[0..max_len],
+    };
+}
+
+pub fn capConst(comptime T: type, slice: []const T, max_len: usize, from: CapFrom) []const T {
+    return cap(T, @constCast(slice), max_len, from);
+}
+
+test cap {
+    try std.testing.expectEqualStrings("abc", cap(u8, @constCast("abcde"), 3, .end));
+    try std.testing.expectEqualStrings("cde", cap(u8, @constCast("abcde"), 3, .start));
+}
+
+test capConst {
+    try std.testing.expectEqualStrings("abc", capConst(u8, "abcde", 3, .end));
+    try std.testing.expectEqualStrings("cde", capConst(u8, "abcde", 3, .start));
+}
+
 pub fn AnyAsBytesUnpad(Any: type) type {
     return if (trait.ptrQualifiedWith(.@"const")(Any)) []const u8 else []u8;
 }
