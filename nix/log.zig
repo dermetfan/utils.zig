@@ -148,12 +148,19 @@ pub const Action = union(enum) {
     }
 
     fn logTo(self: @This(), writer: anytype, writer_mutex: *std.Thread.Mutex) !void {
+        var buffered_writer = std.io.bufferedWriter(writer);
+        const buf_writer = buffered_writer.writer();
+
         writer_mutex.lock();
         defer writer_mutex.unlock();
 
-        try writer.writeAll(prefix);
-        try std.json.stringify(self, .{}, writer);
-        try writer.writeByte('\n');
+        nosuspend {
+            try buf_writer.writeAll(prefix);
+            try std.json.stringify(self, .{}, buf_writer);
+            try buf_writer.writeByte('\n');
+
+            try buffered_writer.flush();
+        }
     }
 
     pub fn log(self: @This()) !void {
