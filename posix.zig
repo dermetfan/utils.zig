@@ -17,9 +17,11 @@ pub fn proxyDuplex(
     /// when the write end of the pipe is closed.
     cancel: ?posix.fd_t,
     options: struct {
-        /// Blocks if a read would cause the buffer size to exceed this.
+        /// Behaves according to `fifo_max_size_behavior`
+        /// if a read would cause the buffer size to exceed this.
         /// Note there are two buffers that may grow up to this size, one for each direction.
         fifo_max_size: ?usize = mem.b_per_mib,
+        fifo_max_size_behavior: enum { block, oom } = .oom,
         /// Will shrink the buffer back down to this size if possible.
         fifo_desired_size: ?usize = 512 * mem.b_per_kib,
         /// Read/write buffer size on the stack.
@@ -87,7 +89,10 @@ pub fn proxyDuplex(
                     // The fifo for this file descriptor is full.
                     // Stop polling for new data as that would result in a busy wait loop.
                     src_poll_fd.events &= ~@as(@TypeOf(src_poll_fd.events), POLL.IN);
-                    return null;
+                    return switch (fns.options.fifo_max_size_behavior) {
+                        .oom => error.OutOfMemory,
+                        .block => null,
+                    };
                 }
 
                 // There is now new data in the fifo that we want to write,
