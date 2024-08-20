@@ -100,7 +100,7 @@ pub fn proxyDuplex(
                 if (num_read != 0) {
                     try fifo.write(buf[0..num_read]);
 
-                    // There is now new data in the fifo that we want to write,
+                    // There is now new data in the fifo that we want to write
                     // so poll for the destination becoming ready for writing.
                     dst_poll_fd.events |= @as(@TypeOf(dst_poll_fd.events), POLL.OUT);
                 }
