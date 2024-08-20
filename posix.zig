@@ -95,12 +95,15 @@ pub fn proxyDuplex(
                     };
                 }
 
-                // There is now new data in the fifo that we want to write,
-                // so poll for the destination becoming ready for writing.
-                dst_poll_fd.events |= @as(@TypeOf(dst_poll_fd.events), POLL.OUT);
-
                 const num_read = try posix.read(src_poll_fd.fd, buf[0..max_read]);
-                try fifo.write(buf[0..num_read]);
+
+                if (num_read != 0) {
+                    try fifo.write(buf[0..num_read]);
+
+                    // There is now new data in the fifo that we want to write,
+                    // so poll for the destination becoming ready for writing.
+                    dst_poll_fd.events |= @as(@TypeOf(dst_poll_fd.events), POLL.OUT);
+                }
 
                 return num_read;
             }
@@ -112,9 +115,10 @@ pub fn proxyDuplex(
                     error.WouldBlock => {}, // retry next time
                     else => err,
                 };
-                fifo.discard(num_written);
 
                 if (num_written != 0) {
+                    fifo.discard(num_written);
+
                     // We have freed up space in the fifo
                     // so we can poll for new data to read into it.
                     src_poll_fd.events |= @as(@TypeOf(src_poll_fd.events), POLL.IN);
