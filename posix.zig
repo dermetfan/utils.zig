@@ -26,6 +26,16 @@ pub fn proxyDuplex(
         comptime buf_size: usize = 4 * mem.b_per_kib,
     },
 ) !ProxyDuplexFinish {
+    // If the `buf_size` is as large as the `fifo_max_size`
+    // we may unset both `POLL.IN` and `POLL.OUT` from `posix.pollfd.events`
+    // leading to a deadlock:
+    // 1. Read until a fifo fills up.
+    // 2. Unset `POLL.IN` because the fifo is full anyway.
+    // 3. Write all the data from the fifo.
+    // 4. Unset `POLL.OUT` because we have nothing to write anyway.
+    if (options.fifo_max_size) |fifo_max_size|
+        std.debug.assert(options.buf_size < fifo_max_size);
+
     const POLL = posix.POLL;
 
     // downstream → upstream
