@@ -5,7 +5,17 @@ const mem = @import("mem.zig");
 
 const posix = std.posix;
 
-pub const ProxyDuplexFinish = enum { downstream_eof, downstream_closed, upstream_eof, upstream_closed, canceled };
+pub const ProxyDuplexFinish = enum {
+    /// The `cancel` file descriptor, if any, became ready.
+    canceled,
+    /// Both sides returned EOF and
+    /// we have written all data we received.
+    eof,
+    /// Downstream closed or returned an error.
+    downstream_closed,
+    /// Upstream closed or returned an error.
+    upstream_closed,
+};
 
 pub fn proxyDuplex(
     allocator: std.mem.Allocator,
@@ -24,8 +34,13 @@ pub fn proxyDuplex(
         fifo_max_size_behavior: enum { block, oom } = .oom,
         /// Will shrink the buffer back down to this size if possible.
         fifo_desired_size: ?usize = 512 * mem.b_per_kib,
+    },
+    // These cannot be comptime fields of `options`
+    // as when the caller tries to change them from their defaults
+    // we hit https://github.com/ziglang/zig/issues/19985.
+    comptime comptime_options: struct {
         /// Read/write buffer size on the stack.
-        comptime buf_size: usize = 4 * mem.b_per_kib,
+        buf_size: usize = 4 * mem.b_per_kib,
     },
 ) !ProxyDuplexFinish {
     // If the `buf_size` is as large as the `fifo_max_size`
@@ -36,7 +51,7 @@ pub fn proxyDuplex(
     // 3. Write all the data from the fifo.
     // 4. Unset `POLL.OUT` because we have nothing to write anyway.
     if (options.fifo_max_size) |fifo_max_size|
-        std.debug.assert(options.buf_size < fifo_max_size);
+        std.debug.assert(comptime_options.buf_size < fifo_max_size);
 
     const POLL = posix.POLL;
 
@@ -67,20 +82,25 @@ pub fn proxyDuplex(
         },
     };
 
+    var downstream_eof = false;
+    var upstream_eof = false;
+
     while (true) {
         std.debug.assert(try posix.poll(&poll_fds, -1) != 0);
-
-        const buf_size = options.buf_size;
 
         const fns = struct {
             options: @TypeOf(options),
 
-            /// Returns the number of bytes read from the file descriptor or null
-            /// if it was not ready for reading or `options.fifo_max_size` would be exceeded.
-            fn handleReadEnd(fns: @This(), src_poll_fd: *posix.pollfd, fifo: *std.fifo.LinearFifo(u8, .Dynamic), dst_poll_fd: *std.posix.pollfd) !?usize {
-                if (src_poll_fd.revents & POLL.IN == 0) return null;
+            fn handleRead(
+                fns: @This(),
+                src_eof: *bool,
+                src_poll_fd: *posix.pollfd,
+                fifo: *std.fifo.LinearFifo(u8, .Dynamic),
+                dst_poll_fd: *std.posix.pollfd,
+            ) !void {
+                if (src_poll_fd.revents & POLL.IN == 0) return;
 
-                var buf: [buf_size]u8 = undefined;
+                var buf: [comptime_options.buf_size]u8 = undefined;
                 const max_read = if (fns.options.fifo_max_size) |fifo_max_size|
                     @min(fifo.readableLength() + buf.len, fifo_max_size) - fifo.readableLength()
                 else
@@ -91,7 +111,7 @@ pub fn proxyDuplex(
                     src_poll_fd.events &= ~@as(@TypeOf(src_poll_fd.events), POLL.IN);
                     return switch (fns.options.fifo_max_size_behavior) {
                         .oom => error.OutOfMemory,
-                        .block => null,
+                        .block => {},
                     };
                 }
 
@@ -103,12 +123,21 @@ pub fn proxyDuplex(
                     // There is now new data in the fifo that we want to write
                     // so poll for the destination becoming ready for writing.
                     dst_poll_fd.events |= @as(@TypeOf(dst_poll_fd.events), POLL.OUT);
-                }
+                } else {
+                    src_eof.* = true;
 
-                return num_read;
+                    // There won't be more data to read after EOF
+                    // so we don't need to poll for it.
+                    src_poll_fd.events &= ~@as(@TypeOf(src_poll_fd.events), POLL.IN);
+                }
             }
 
-            fn handleWriteEnd(fns: @This(), src_poll_fd: *posix.pollfd, fifo: *std.fifo.LinearFifo(u8, .Dynamic), dst_poll_fd: *posix.pollfd) !void {
+            fn handleWrite(
+                fns: @This(),
+                src_poll_fd: *posix.pollfd,
+                fifo: *std.fifo.LinearFifo(u8, .Dynamic),
+                dst_poll_fd: *posix.pollfd,
+            ) !void {
                 if (dst_poll_fd.revents & POLL.OUT == 0) return;
 
                 const num_written = posix.write(dst_poll_fd.fd, fifo.readableSlice(0)) catch |err| return switch (err) {
@@ -136,25 +165,25 @@ pub fn proxyDuplex(
             }
         }{ .options = options };
 
-        if (try fns.handleReadEnd(&poll_fds[0], &fifo_up, &poll_fds[1])) |num_read|
-            if (num_read == 0) return .downstream_eof;
-        if (try fns.handleReadEnd(&poll_fds[1], &fifo_down, &poll_fds[0])) |num_read|
-            if (num_read == 0) return .upstream_eof;
+        try fns.handleRead(&downstream_eof, &poll_fds[0], &fifo_up, &poll_fds[1]);
+        try fns.handleRead(&upstream_eof, &poll_fds[1], &fifo_down, &poll_fds[0]);
 
-        try fns.handleWriteEnd(&poll_fds[0], &fifo_up, &poll_fds[1]);
-        try fns.handleWriteEnd(&poll_fds[1], &fifo_down, &poll_fds[0]);
+        try fns.handleWrite(&poll_fds[0], &fifo_up, &poll_fds[1]);
+        try fns.handleWrite(&poll_fds[1], &fifo_down, &poll_fds[0]);
+
+        if (downstream_eof and fifo_up.readableLength() == 0 and
+            upstream_eof and fifo_down.readableLength() == 0)
+            return .eof;
 
         inline for (poll_fds, 0..) |poll_fd, idx| {
-            if (poll_fd.revents & POLL.HUP != 0)
+            if (poll_fd.revents & (POLL.HUP | POLL.ERR) != 0) {
                 return switch (idx) {
                     0 => .downstream_closed,
                     1 => .upstream_closed,
                     2 => .canceled,
-                    inline else => unreachable,
+                    else => comptime unreachable,
                 };
-
-            if (poll_fd.revents & POLL.ERR != 0)
-                return posix.PollError.Unexpected;
+            }
 
             if (poll_fd.revents & POLL.NVAL != 0)
                 unreachable; // always a race condition
