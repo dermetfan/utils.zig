@@ -33,3 +33,15 @@ fn formatJoin(
 pub fn fmtJoin(sep: []const u8, strs: []const []const u8) std.fmt.Formatter(formatJoin) {
     return .{ .data = .{ .sep = sep, .strs = strs } };
 }
+
+pub fn formatSourceLocation(src: std.builtin.SourceLocation, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    try std.fmt.format(
+        writer,
+        "{s}() in {s}:{d}:{d}",
+        .{ src.fn_name, src.file, src.line, src.column },
+    );
+}
+
+pub fn fmtSourceLocation(src: std.builtin.SourceLocation) std.fmt.Formatter(formatSourceLocation) {
+    return .{ .data = src };
+}

@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
+const fmt = @import("fmt.zig");
 const mem = @import("mem.zig");
 
 const posix = std.posix;
@@ -193,3 +194,85 @@ pub fn proxyDuplex(
             return .canceled;
     }
 }
+
+/// Polls before attempting to `read()` or `write()`
+/// and returns `error.NotOpenForReading` or `error.NotOpenForWriting`
+/// when the FD's state changes while polling.
+/// This helps avoid using a reused FD that was closed
+/// in between reads/writes because you get the error immediately
+/// as opposed to on the next read/write.
+pub const PollingStream = struct {
+    fd: posix.fd_t,
+
+    pub const ReadError = posix.ReadError || posix.PollError;
+    pub const Reader = std.io.Reader(@This(), ReadError, read);
+
+    pub const WriteError = posix.WriteError || posix.PollError;
+    pub const Writer = std.io.Writer(@This(), WriteError, write);
+
+    /// Returns `error.NotOpenForReading` on `POLL.HUP` and `POLL.ERR`.
+    pub fn read(self: @This(), buf: []u8) ReadError!usize {
+        const POLL = posix.POLL;
+
+        var poll_fds = [1]posix.pollfd{
+            .{
+                .fd = self.fd,
+                .events = POLL.IN,
+                .revents = undefined,
+            },
+        };
+
+        std.debug.assert(try posix.poll(&poll_fds, -1) != 0);
+
+        if (poll_fds[0].revents & POLL.IN != 0)
+            return posix.read(poll_fds[0].fd, buf);
+
+        if (poll_fds[0].revents & (POLL.HUP | POLL.ERR) != 0)
+            return error.NotOpenForReading;
+
+        if (poll_fds[0].revents & POLL.NVAL != 0)
+            std.debug.panic(
+                "polled invalid FD {d} in {}",
+                .{ poll_fds[0].fd, fmt.fmtSourceLocation(@src()) },
+            );
+
+        unreachable;
+    }
+
+    /// Returns `error.NotOpenForWriting` on `POLL.HUP` and `POLL.ERR`.
+    pub fn write(self: @This(), buf: []const u8) WriteError!usize {
+        const POLL = posix.POLL;
+
+        var poll_fds = [1]posix.pollfd{
+            .{
+                .fd = self.fd,
+                .events = POLL.OUT,
+                .revents = undefined,
+            },
+        };
+
+        std.debug.assert(try posix.poll(&poll_fds, -1) != 0);
+
+        if (poll_fds[0].revents & POLL.OUT != 0)
+            return posix.write(poll_fds[0].fd, buf);
+
+        if (poll_fds[0].revents & (POLL.HUP | POLL.ERR) != 0)
+            return error.NotOpenForWriting;
+
+        if (poll_fds[0].revents & POLL.NVAL != 0)
+            std.debug.panic(
+                "polled closed FD {d} in {}",
+                .{ poll_fds[0].fd, fmt.fmtSourceLocation(@src()) },
+            );
+
+        unreachable;
+    }
+
+    pub fn reader(self: @This()) Reader {
+        return .{ .context = self };
+    }
+
+    pub fn writer(self: @This()) Writer {
+        return .{ .context = self };
+    }
+};
