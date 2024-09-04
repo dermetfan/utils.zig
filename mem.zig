@@ -1,6 +1,66 @@
 const std = @import("std");
 const trait = @import("trait");
 
+// Divisions of a byte.
+pub const b_per_kib = 1024;
+pub const b_per_mib = 1024 * b_per_kib;
+pub const b_per_gib = 1024 * b_per_mib;
+pub const b_per_tib = 1024 * b_per_gib;
+
+// Divisions of a KiB.
+pub const kib_per_mib = 1024;
+pub const kib_per_gib = 1024 * kib_per_mib;
+pub const kib_per_tib = 1024 * kib_per_gib;
+
+// Divisions of a MiB.
+pub const mib_per_gib = 1024;
+pub const mib_per_tib = 1024 * mib_per_gib;
+
+// Divisions of a GiB.
+pub const gib_per_tib = 1024;
+
+// Divisions of a byte.
+pub const b_per_kb = 1000;
+pub const b_per_mb = 1000 * b_per_kb;
+pub const b_per_gb = 1000 * b_per_mb;
+pub const b_per_tb = 1000 * b_per_gb;
+
+// Divisions of a KB.
+pub const kb_per_mb = 1000;
+pub const kb_per_gb = 1000 * kb_per_mb;
+pub const kb_per_tb = 1000 * kb_per_gb;
+
+// Divisions of a MB.
+pub const mb_per_gb = 1000;
+pub const mb_per_tb = 1000 * mb_per_gb;
+
+// Divisions of a GB.
+pub const gb_per_tb = 1000;
+
+pub const CapFrom = enum { start, end };
+
+pub fn cap(comptime T: type, slice: []T, max_len: usize, from: CapFrom) []T {
+    if (max_len >= slice.len) return slice;
+    return switch (from) {
+        .start => slice[slice.len - max_len ..],
+        .end => slice[0..max_len],
+    };
+}
+
+pub fn capConst(comptime T: type, slice: []const T, max_len: usize, from: CapFrom) []const T {
+    return cap(T, @constCast(slice), max_len, from);
+}
+
+test cap {
+    try std.testing.expectEqualStrings("abc", cap(u8, @constCast("abcde"), 3, .end));
+    try std.testing.expectEqualStrings("cde", cap(u8, @constCast("abcde"), 3, .start));
+}
+
+test capConst {
+    try std.testing.expectEqualStrings("abc", capConst(u8, "abcde", 3, .end));
+    try std.testing.expectEqualStrings("cde", capConst(u8, "abcde", 3, .start));
+}
+
 pub fn AnyAsBytesUnpad(Any: type) type {
     return if (trait.ptrQualifiedWith(.@"const")(Any)) []const u8 else []u8;
 }

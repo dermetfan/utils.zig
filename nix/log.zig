@@ -12,8 +12,9 @@ pub fn logFn(
     args: anytype,
 ) void {
     const meta =
-        "[" ++ comptime level.asText() ++ "] " ++
-        if (scope != .default) "(" ++ @tagName(scope) ++ ") " else "";
+        comptime level.asText() ++
+        (if (scope != .default) "(" ++ @tagName(scope) ++ ")" else "") ++
+        ": ";
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() == .leak) std.debug.panic("could not log memory leak after logging\n", .{});
@@ -147,12 +148,19 @@ pub const Action = union(enum) {
     }
 
     fn logTo(self: @This(), writer: anytype, writer_mutex: *std.Thread.Mutex) !void {
+        var buffered_writer = std.io.bufferedWriter(writer);
+        const buf_writer = buffered_writer.writer();
+
         writer_mutex.lock();
         defer writer_mutex.unlock();
 
-        try writer.writeAll(prefix);
-        try std.json.stringify(self, .{}, writer);
-        try writer.writeByte('\n');
+        nosuspend {
+            try buf_writer.writeAll(prefix);
+            try std.json.stringify(self, .{}, buf_writer);
+            try buf_writer.writeByte('\n');
+
+            try buffered_writer.flush();
+        }
     }
 
     pub fn log(self: @This()) !void {

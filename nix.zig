@@ -746,6 +746,32 @@ pub const FailedBuilds = struct {
     }
 };
 
+pub const StoreInfo = struct {
+    url: []const u8,
+    version: ?std.SemanticVersion = null,
+    trusted: bool = false,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+        const inner = try std.json.innerParse(struct {
+            url: []const u8,
+            version: ?[]const u8 = null,
+            trusted: ?u1 = null,
+        }, allocator, source, options);
+
+        return .{
+            .url = try allocator.dupe(u8, inner.url),
+            .version = if (inner.version) |v|
+                std.SemanticVersion.parse(v) catch |err| return switch (err) {
+                    error.InvalidVersion => error.UnexpectedToken,
+                    else => |e| e,
+                }
+            else
+                null,
+            .trusted = inner.trusted orelse 0 == 1,
+        };
+    }
+};
+
 pub fn impl(
     comptime run_fn: anytype,
     comptime log_scope: ?@TypeOf(.enum_literal),
@@ -771,7 +797,7 @@ pub fn impl(
             return std.SemanticVersion.parse(result.stdout);
         }
 
-        pub fn config(allocator: std.mem.Allocator, diagnostics: *?ChildProcessDiagnostics) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
+        pub fn config(allocator: std.mem.Allocator, diagnostics: ?*ChildProcessDiagnostics) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
             const result = try std.process.Child.run(.{
                 .allocator = allocator,
                 .max_output_bytes = 100 * 1024,
@@ -780,7 +806,7 @@ pub fn impl(
             defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
-                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.CouldNotReadNixConfig;
             }
             allocator.free(result.stderr);
@@ -795,7 +821,7 @@ pub fn impl(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakeMetadataOptions,
-            diagnostics: *?ChildProcessDiagnostics,
+            diagnostics: ?*ChildProcessDiagnostics,
         ) !std.json.Parsed(FlakeMetadata) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
@@ -821,7 +847,7 @@ pub fn impl(
 
             if (result.term != .Exited or result.term.Exited != 0) {
                 log_scoped.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
-                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.FlakeMetadataFailed; // TODO return more specific error
             }
             defer allocator.free(result.stderr);
@@ -839,7 +865,7 @@ pub fn impl(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakePrefetchOptions,
-            diagnostics: *?ChildProcessDiagnostics,
+            diagnostics: ?*ChildProcessDiagnostics,
         ) !?std.json.Parsed(FlakeMetadata.Locks) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
@@ -867,7 +893,7 @@ pub fn impl(
 
             if (result.term != .Exited or result.term.Exited != 0) {
                 log_scoped.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
-                diagnostics.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
                 return error.FlakePrefetchFailed; // TODO return more specific error
             }
             defer allocator.free(result.stderr);
@@ -901,14 +927,14 @@ pub fn impl(
             // this test needs internet and spawns child processes
             if (true) return error.SkipZigTest;
 
-            if (try flakeMetadataLocks(std.testing.allocator, "github:IntersectMBO/cardano-db-sync/13.0.4", .{ .refresh = false })) |locks| locks.deinit();
+            if (try flakeMetadataLocks(std.testing.allocator, "github:IntersectMBO/cardano-db-sync/13.0.4", .{ .refresh = false }, null)) |locks| locks.deinit();
         }
 
         pub fn lockFlakeRef(
             allocator: std.mem.Allocator,
             flake_ref: []const u8,
             opts: FlakeMetadataOptions,
-            diagnostics: *?ChildProcessDiagnostics,
+            diagnostics: ?*ChildProcessDiagnostics,
         ) ![]const u8 {
             const flake = std.mem.sliceTo(flake_ref, '#');
 
@@ -933,24 +959,55 @@ pub fn impl(
             const expected = latest ++ "/057f9aecfb71c4437d2b27d3323df7f93c010b7e";
 
             {
-                var diagnostics: ?ChildProcessDiagnostics = null;
-                defer if (diagnostics) |d| d.deinit(std.testing.allocator);
-                const locked = try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
+                const locked = locked: {
+                    var diagnostics: ChildProcessDiagnostics = undefined;
+                    errdefer {
+                        defer diagnostics.deinit(std.testing.allocator);
+                        std.log.err("term: {}\nstderr: {s}", .{ diagnostics.term, diagnostics.stderr });
+                    }
+                    break :locked try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
+                };
                 defer std.testing.allocator.free(locked);
 
-                try std.testing.expect(diagnostics == null);
                 try std.testing.expectEqualStrings(expected, locked);
             }
 
             {
-                var diagnostics: ?ChildProcessDiagnostics = null;
-                defer if (diagnostics) |d| d.deinit(std.testing.allocator);
-                const locked = try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
+                const locked = locked: {
+                    var diagnostics: ChildProcessDiagnostics = undefined;
+                    errdefer {
+                        defer diagnostics.deinit(std.testing.allocator);
+                        std.log.err("term: {}\nstderr: {s}", .{ diagnostics.term, diagnostics.stderr });
+                    }
+                    break :locked try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
+                };
                 defer std.testing.allocator.free(locked);
 
-                try std.testing.expect(diagnostics == null);
                 try std.testing.expectEqualStrings(expected ++ "#hello^out", locked);
             }
+        }
+
+        pub fn storeInfo(
+            allocator: std.mem.Allocator,
+            store: []const u8,
+            diagnostics: ?*ChildProcessDiagnostics,
+        ) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotPingNixStore})!std.json.Parsed(StoreInfo) {
+            const result = try run_fn(.{
+                .allocator = allocator,
+                .argv = &.{ "nix", "store", "info", "--json", "--store", store },
+            });
+            defer allocator.free(result.stdout);
+
+            if (result.term != .Exited or result.term.Exited != 0) {
+                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
+                return error.CouldNotPingNixStore;
+            }
+            allocator.free(result.stderr);
+
+            return std.json.parseFromSlice(StoreInfo, allocator, result.stdout, .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            });
         }
     };
 }
