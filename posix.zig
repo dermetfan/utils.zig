@@ -31,6 +31,128 @@ pub const ProxyDuplexFinish = enum {
     upstream_closed,
 };
 
+pub const ProxyDuplexControl = struct {
+    pipes: std.ArrayList(struct {
+        read: posix.fd_t,
+        write: posix.fd_t,
+    }),
+    pipes_mutex: std.Thread.Mutex = .{},
+
+    pub fn deinit(self: *@This()) void {
+        {
+            std.debug.assert(self.pipes_mutex.tryLock());
+            defer self.pipes_mutex.unlock();
+
+            std.debug.assert(self.pipes.items.len == 0);
+            self.pipes.deinit();
+        }
+
+        self.* = undefined;
+    }
+
+    pub fn init(allocator: std.mem.Allocator) @This() {
+        return .{ .pipes = std.meta.fieldInfo(@This(), .pipes).type.init(allocator) };
+    }
+
+    fn register(self: *@This()) (std.mem.Allocator.Error || posix.PipeError)!posix.fd_t {
+        const pipe_read, const pipe_write = try posix.pipe2(.{ .DIRECT = true });
+        errdefer {
+            posix.close(pipe_write);
+            posix.close(pipe_read);
+        }
+
+        self.pipes_mutex.lock();
+        defer self.pipes_mutex.unlock();
+
+        try self.pipes.append(.{
+            .read = pipe_read,
+            .write = pipe_write,
+        });
+
+        return pipe_read;
+    }
+
+    fn deregister(self: *@This(), pipe_read: posix.fd_t) void {
+        self.pipes_mutex.lock();
+        defer self.pipes_mutex.unlock();
+
+        const pipe = self.pipes.swapRemove(self.pipeIndex(pipe_read));
+        std.debug.assert(pipe.read == pipe_read);
+
+        posix.close(pipe.write);
+        posix.close(pipe.read);
+
+        if (self.pipes.items.len < self.pipes.capacity / 2)
+            self.pipes.shrinkAndFree(self.pipes.items.len);
+    }
+
+    /// Be sure to lock `pipes_mutex` first.
+    fn pipeIndex(self: *@This(), pipe_read: posix.fd_t) usize {
+        for (self.pipes.items, 0..) |pipe, idx|
+            if (pipe.read == pipe_read)
+                return idx;
+
+        std.debug.panic(
+            "{}: FD {d} is not a known pipe read end",
+            .{ fmt.fmtSourceLocation(@src()), pipe_read },
+        );
+    }
+
+    pub fn cancel(self: *@This()) !void {
+        try self.write(.cancel, null);
+    }
+
+    pub fn ignore(self: *@This(), stream: Command.Stream) !void {
+        var done = std.Thread.WaitGroup{};
+        try self.write(.{ .ignore = .{ .stream = stream, .done = &done } }, &done);
+        done.wait();
+    }
+
+    pub fn unignore(self: *@This(), stream: Command.Stream) !void {
+        var done = std.Thread.WaitGroup{};
+        try self.write(.{ .unignore = .{ .stream = stream, .done = &done } }, &done);
+        done.wait();
+    }
+
+    fn write(self: *@This(), command: Command, wg: ?*std.Thread.WaitGroup) posix.WriteError!void {
+        self.pipes_mutex.lock();
+        defer self.pipes_mutex.unlock();
+
+        for (self.pipes.items) |pipe| {
+            if (wg) |g| g.start();
+            std.debug.assert(try posix.write(pipe.write, std.mem.asBytes(&command)) == @sizeOf(Command));
+        }
+    }
+
+    fn read(pipe_read: posix.fd_t) posix.ReadError!Command {
+        var command: Command = undefined;
+        std.debug.assert(try posix.read(pipe_read, std.mem.asBytes(&command)) == @sizeOf(Command));
+        return command;
+    }
+
+    /// Must be copyable.
+    const Command = union(enum) {
+        cancel,
+        ignore: struct {
+            stream: Stream,
+            done: *std.Thread.WaitGroup,
+        },
+        unignore: struct {
+            stream: Stream,
+            done: *std.Thread.WaitGroup,
+        },
+
+        const Stream = enum { downstream, upstream };
+
+        comptime {
+            // Make sure we stay within `PIPE_BUF` to avoid trouble
+            // with `O_DIRECT`. According to `man 7 pipe`:
+            // > POSIX.1 requires PIPE_BUF to be at least 512 bytes.
+            std.debug.assert(@sizeOf(@This()) <= 512);
+        }
+    };
+};
+
 pub fn proxyDuplex(
     allocator: std.mem.Allocator,
     // These cannot be comptime fields of `options`
@@ -44,12 +166,19 @@ pub fn proxyDuplex(
     },
     downstream: comptime_options.downstream_kind.type(),
     upstream: comptime_options.upstream_kind.type(),
-    /// Will return `.canceled` when this file descriptor
-    /// is ready for reading, ready for writing,
-    /// or, if it is the read end of a pipe,
-    /// when the write end of the pipe is closed.
-    cancel: ?posix.fd_t,
     options: struct {
+        /// Will return `.canceled` when this file descriptor
+        /// is ready for reading, ready for writing,
+        /// or, if it is the read end of a pipe,
+        /// when the write end of the pipe is closed.
+        ///
+        /// We have this in addition to `control`
+        /// because that allows the caller to reuse
+        /// the same pipe for many things at once,
+        /// which `control` does not support.
+        cancel: ?posix.fd_t = null,
+        /// The same instance can be used for multiple concurrent calls.
+        control: ?*ProxyDuplexControl = null,
         /// Behaves according to `fifo_max_size_behavior`
         /// if a read would cause the buffer size to exceed this.
         /// Note there are two buffers that may grow up to this size, one for each direction.
@@ -70,6 +199,12 @@ pub fn proxyDuplex(
         std.debug.assert(comptime_options.buf_size < fifo_max_size);
 
     const POLL = posix.POLL;
+
+    const control_read_fd = if (options.control) |control|
+        try control.register()
+    else
+        null;
+    defer if (control_read_fd) |fd| options.control.?.deregister(fd);
 
     // downstream → upstream
     var fifo_up = std.fifo.LinearFifo(u8, .Dynamic).init(allocator);
@@ -92,8 +227,13 @@ pub fn proxyDuplex(
             .revents = undefined,
         },
         .{
-            .fd = cancel orelse -1,
+            .fd = options.cancel orelse -1,
             .events = POLL.IN | POLL.OUT,
+            .revents = undefined,
+        },
+        .{
+            .fd = control_read_fd orelse -1,
+            .events = POLL.IN,
             .revents = undefined,
         },
     };
@@ -178,12 +318,12 @@ pub fn proxyDuplex(
                     // We have freed up space in the fifo
                     // so we can poll for new data to read into it.
                     src_poll_fd.events |= @as(@TypeOf(src_poll_fd.events), POLL.IN);
+                }
 
-                    if (fifo.readableLength() == 0) {
-                        // The fifo is empty so we don't need to poll for ready for writing
-                        // because we have nothing to write anyway.
-                        dst_poll_fd.events &= ~@as(@TypeOf(dst_poll_fd.events), POLL.OUT);
-                    }
+                if (fifo.readableLength() == 0) {
+                    // The fifo is empty so we don't need to poll for ready for writing
+                    // because we have nothing to write anyway.
+                    dst_poll_fd.events &= ~@as(@TypeOf(dst_poll_fd.events), POLL.OUT);
                 }
 
                 if (fns.options.fifo_desired_size) |fifo_desired_size|
@@ -207,7 +347,7 @@ pub fn proxyDuplex(
                 return switch (idx) {
                     0 => .downstream_closed,
                     1 => .upstream_closed,
-                    2 => .canceled,
+                    2, 3 => .canceled,
                     else => comptime unreachable,
                 };
             }
@@ -218,6 +358,25 @@ pub fn proxyDuplex(
 
         if (poll_fds[2].revents & (POLL.IN | POLL.OUT) != 0)
             return .canceled;
+
+        if (poll_fds[3].revents & POLL.IN != 0)
+            switch (try ProxyDuplexControl.read(control_read_fd.?)) {
+                .cancel => return .canceled,
+                .ignore => |ignore| {
+                    (switch (ignore.stream) {
+                        .downstream => poll_fds[0],
+                        .upstream => poll_fds[1],
+                    }).fd = -1;
+                    ignore.done.finish();
+                },
+                .unignore => |unignore| {
+                    switch (unignore.stream) {
+                        .downstream => poll_fds[0].fd = downstream,
+                        .upstream => poll_fds[1].fd = upstream,
+                    }
+                    unignore.done.finish();
+                },
+            };
     }
 }
 
