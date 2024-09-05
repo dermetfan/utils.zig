@@ -343,14 +343,13 @@ pub fn proxyDuplex(
             return .eof;
 
         inline for (poll_fds, 0..) |poll_fd, idx| {
-            if (poll_fd.revents & (POLL.HUP | POLL.ERR) != 0) {
+            if (poll_fd.revents & (POLL.HUP | POLL.ERR) != 0)
                 return switch (idx) {
                     0 => .downstream_closed,
                     1 => .upstream_closed,
                     2, 3 => .canceled,
                     else => comptime unreachable,
                 };
-            }
 
             if (poll_fd.revents & POLL.NVAL != 0)
                 unreachable; // Always a race condition.
