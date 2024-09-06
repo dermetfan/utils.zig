@@ -652,17 +652,11 @@ pub const FailedBuilds = struct {
 
     /// Duplicates the slices taken from `stderr` so you can free it after the call.
     pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr: []const u8) !@This() {
-        var builds = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (builds.items) |drv| allocator.free(drv);
-            builds.deinit(allocator);
-        }
+        var builds = std.StringArrayHashMapUnmanaged(void){};
+        defer builds.deinit(allocator);
 
-        var dependents = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (dependents.items) |drv| allocator.free(drv);
-            dependents.deinit(allocator);
-        }
+        var dependents = std.StringArrayHashMapUnmanaged(void){};
+        defer dependents.deinit(allocator);
 
         var iter = std.mem.splitScalar(u8, stderr, '\n');
         while (iter.next()) |line| {
@@ -690,7 +684,7 @@ pub const FailedBuilds = struct {
                 const drv = try drv_list.toOwnedSlice(allocator);
                 errdefer allocator.free(drv);
 
-                try builds.append(allocator, drv);
+                try builds.put(allocator, drv, {});
             }
 
             foreign_builds: {
@@ -716,7 +710,7 @@ pub const FailedBuilds = struct {
                 const drv = try drv_list.toOwnedSlice(allocator);
                 errdefer allocator.free(drv);
 
-                try builds.append(allocator, drv);
+                try builds.put(allocator, drv, {});
             }
 
             dependents: {
@@ -736,13 +730,19 @@ pub const FailedBuilds = struct {
                 const drv = try drv_list.toOwnedSlice(allocator);
                 errdefer allocator.free(drv);
 
-                try dependents.append(allocator, drv);
+                try dependents.put(allocator, drv, {});
             }
         }
 
+        const builds_slice = try allocator.dupe([]const u8, builds.keys());
+        errdefer allocator.free(builds_slice);
+
+        const dependents_slice = try allocator.dupe([]const u8, dependents.keys());
+        errdefer allocator.free(dependents_slice);
+
         return .{
-            .builds = try builds.toOwnedSlice(allocator),
-            .dependents = try dependents.toOwnedSlice(allocator),
+            .builds = builds_slice,
+            .dependents = dependents_slice,
         };
     }
 };
