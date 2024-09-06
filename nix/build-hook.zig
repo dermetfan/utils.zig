@@ -7,6 +7,8 @@ const std = @import("std");
 const log = @import("log.zig");
 const wire = @import("wire.zig");
 
+const mem = @import("../mem.zig");
+
 pub fn Connection(comptime Reader: type, comptime Writer: type) type {
     return struct {
         reader: Reader,
@@ -216,7 +218,7 @@ pub const Response = union((enum {
                 var store = try std.ArrayList(u8).initCapacity(
                     allocator,
                     // Somewhat arbitrary, should fit all stores encountered in practice.
-                    1024 * 2,
+                    2 * mem.b_per_kib,
                 );
                 errdefer store.deinit();
 

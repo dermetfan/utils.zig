@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const mem = @import("mem.zig");
 const meta = @import("meta.zig");
 
 pub const build_hook = @import("nix/build-hook.zig");
@@ -623,13 +624,13 @@ pub const Config = struct {
 };
 
 pub const FlakeMetadataOptions = struct {
-    max_output_bytes: usize = 50 * 1024,
+    max_output_bytes: usize = 50 * mem.b_per_kib,
     refresh: bool = true,
     no_write_lock_file: bool = true,
 };
 
 pub const FlakePrefetchOptions = struct {
-    max_output_bytes: usize = 50 * 1024,
+    max_output_bytes: usize = 50 * mem.b_per_kib,
     refresh: bool = true,
 };
 
@@ -800,7 +801,7 @@ pub fn impl(
         pub fn config(allocator: std.mem.Allocator, diagnostics: ?*ChildProcessDiagnostics) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
             const result = try std.process.Child.run(.{
                 .allocator = allocator,
-                .max_output_bytes = 100 * 1024,
+                .max_output_bytes = 100 * mem.b_per_kib,
                 .argv = &.{ "nix", "show-config", "--json" },
             });
             defer allocator.free(result.stdout);
