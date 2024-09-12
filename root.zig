@@ -1,5 +1,6 @@
 const std = @import("std");
 
+pub const debug = @import("debug.zig");
 pub const enums = @import("enums.zig");
 pub const fmt = @import("fmt.zig");
 pub const log = @import("log.zig");

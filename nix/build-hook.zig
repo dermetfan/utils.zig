@@ -7,13 +7,14 @@ const std = @import("std");
 const log = @import("log.zig");
 const wire = @import("wire.zig");
 
+const debug = @import("../debug.zig");
 const mem = @import("../mem.zig");
 
-pub fn Connection(comptime Reader: type, comptime Writer: type) type {
+pub fn Connection(comptime Reader: type, comptime Writer: type, comptime WriterMutex: type) type {
     return struct {
         reader: Reader,
         writer: Writer,
-        writer_mutex: *std.Thread.Mutex,
+        writer_mutex: WriterMutex,
 
         pub fn readDerivation(self: @This(), allocator: std.mem.Allocator) (wire.ReadError(Reader, true) || error{ UnexpectedPacket, BadBool })!Derivation {
             return (try Request.read(allocator, self.reader)).derivation;
@@ -77,16 +78,21 @@ pub fn Connection(comptime Reader: type, comptime Writer: type) type {
 }
 
 /// Returns the nix config and a connection.
-pub fn start(allocator: std.mem.Allocator) (wire.ReadError(std.fs.File.Reader, true) || std.fs.File.Writer.Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(std.fs.File.Reader, std.fs.File.Writer) } {
-    return startAdvanced(allocator, std.io.getStdIn().reader(), std.io.getStdErr().writer(), std.debug.getStderrMutex());
+pub fn start(allocator: std.mem.Allocator) (wire.ReadError(std.fs.File.Reader, true) || std.fs.File.Writer.Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(std.fs.File.Reader, std.fs.File.Writer, *debug.StderrMutex) } {
+    return startAdvanced(
+        allocator,
+        std.io.getStdIn().reader(),
+        std.io.getStdErr().writer(),
+        debug.getStderrMutex(),
+    );
 }
 
 pub fn startAdvanced(
     allocator: std.mem.Allocator,
     reader: anytype,
     writer: anytype,
-    writer_mutex: *std.Thread.Mutex,
-) (wire.ReadError(@TypeOf(reader), true) || @TypeOf(writer).Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(@TypeOf(reader), @TypeOf(writer)) } {
+    writer_mutex: anytype,
+) (wire.ReadError(@TypeOf(reader), true) || @TypeOf(writer).Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(@TypeOf(reader), @TypeOf(writer), @TypeOf(writer_mutex)) } {
     return .{
         try wire.readStringStringMap(allocator, reader),
         .{

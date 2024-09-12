@@ -1,7 +1,9 @@
 const std = @import("std");
 
+const debug = @import("../debug.zig");
+
 const stderr = std.io.getStdErr().writer();
-const stderr_mutex = std.debug.getStderrMutex();
+const stderr_mutex = debug.getStderrMutex();
 
 const prefix = "@nix ";
 
@@ -147,7 +149,7 @@ pub const Action = union(enum) {
         try write_stream.endObject();
     }
 
-    fn logTo(self: @This(), writer: anytype, writer_mutex: *std.Thread.Mutex) !void {
+    fn logTo(self: @This(), writer: anytype, writer_mutex: anytype) !void {
         var buffered_writer = std.io.bufferedWriter(writer);
         const buf_writer = buffered_writer.writer();
 
@@ -168,7 +170,7 @@ pub const Action = union(enum) {
     }
 };
 
-fn logMsgTo(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype, writer: anytype, writer_mutex: *std.Thread.Mutex) !void {
+fn logMsgTo(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype, writer: anytype, writer_mutex: anytype) !void {
     const message = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(message);
 
