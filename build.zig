@@ -80,7 +80,7 @@ pub const lib = struct {
             return self;
         }
 
-        fn make(step: *Build.Step, progress_node: *std.Progress.Node) !void {
+        fn make(step: *Build.Step, progress_node: std.Progress.Node) !void {
             const self: *@This() = @fieldParentPtr("step", step);
             const src_dir_path = self.inner.options.source_dir.getPath2(step.owner, step);
 

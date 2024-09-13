@@ -3,8 +3,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .trait = .{
-            .url = "https://github.com/wrongnull/zigtrait/archive/327d916b522676e6440df7f831d049001fa24dfd.tar.gz",
-            .hash = "12209e2e8b61415ca4e12d08cf6e7e0fe514ac83a2659f497c033be19c331cef408d",
+            .url = "https://github.com/wrongnull/zigtrait/archive/4b431169c9226b3fe2bbba89f451e5c8bca4c5a3.tar.gz",
+            .hash = "12208d1a1be506a77528120e9a485ba9d610f435d601b897eb5bfd9a3596d2e740a4",
         },
     },
     .paths = .{
