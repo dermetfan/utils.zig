@@ -1,11 +1,23 @@
 const std = @import("std");
+
 const Build = std.Build;
 
 pub const Options = struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 
+    otel: bool,
     zqlite: bool,
+
+    pub fn common(self: @This()) struct {
+        target: Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    } {
+        return .{
+            .target = self.target,
+            .optimize = self.optimize,
+        };
+    }
 };
 
 pub fn build(b: *Build) !void {
@@ -13,11 +25,13 @@ pub fn build(b: *Build) !void {
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
 
+        .otel = b.option(bool, "otel", "Enable the OpenTelemetry SDK") orelse false,
         .zqlite = b.option(bool, "zqlite", "Enable the zqlite utils") orelse false,
     };
 
     const options_mod = options_mod: {
         const src = b.addOptions();
+        src.addOption(bool, "otel", options.otel);
         src.addOption(bool, "zqlite", options.zqlite);
         break :options_mod src.createModule();
     };
@@ -48,18 +62,41 @@ pub fn build(b: *Build) !void {
     }
 
     _ = utils.addCheckTls(b);
+
+    if (options.otel) {
+        const generate = b.step("generate", "generate source files from protobuf definitions");
+        {
+            const proto_path = (b.lazyDependency("opentelemetry-proto", .{}) orelse return).path("").getPath(b);
+
+            var protoc_step = (b.lazyImport(@This(), "protobuf") orelse return).RunProtocStep.create(
+                b,
+                (b.lazyDependency("protobuf", options.common()) orelse return).builder,
+                options.target,
+                .{
+                    .destination_directory = b.path("src/otel/otlp"),
+                    .source_files = &.{
+                        "opentelemetry/proto/collector/trace/v1/trace_service.proto",
+                        "opentelemetry/proto/trace/v1/trace.proto",
+                    },
+                    .include_directories = &.{proto_path},
+                },
+            );
+            protoc_step.verbose = b.verbose;
+
+            generate.dependOn(&protoc_step.step);
+        }
+    }
 }
 
 fn addDependencyImports(b: *Build, module: *Build.Module, options: Options) void {
-    const common_options = .{
-        .target = options.target,
-        .optimize = options.optimize,
-    };
-
-    module.addImport("trait", b.dependency("trait", common_options).module("zigtrait"));
+    module.addImport("trait", b.dependency("trait", options.common()).module("zigtrait"));
 
     if (options.zqlite) {
-        module.addImport("zqlite", (b.lazyDependency("zqlite", common_options) orelse return).module("zqlite"));
+        module.addImport("zqlite", (b.lazyDependency("zqlite", options.common()) orelse return).module("zqlite"));
+    }
+
+    if (options.otel) {
+        module.addImport("protobuf", (b.lazyDependency("protobuf", options.common()) orelse return).module("protobuf"));
     }
 }
 

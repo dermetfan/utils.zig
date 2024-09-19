@@ -1,5 +1,9 @@
 {inputs, ...}: {
-  perSystem = {pkgs, ...}: {
+  perSystem = {
+    lib,
+    pkgs,
+    ...
+  }: {
     checks.test = pkgs.buildZigPackage {
       src = inputs.inclusive.lib.inclusive ./.. [
         ../build.zig
@@ -7,7 +11,7 @@
         ../src
       ];
 
-      zigDepsHash = "sha256-os8vNTirCjNyLFSUEBKw7RQtgKodaC1dR+3Jp+Z7xkU=";
+      zigDepsHash = "sha256-4f9ibOc6OHK8GIezoRaID7xOq3MCBFkqvBtociRYIn4=";
 
       zigRelease = "ReleaseSafe";
 
@@ -16,9 +20,20 @@
       dontBuild = true;
       dontInstall = true;
 
+      PROTOC_PATH = lib.getExe pkgs.protobuf;
+
       nativeCheckInputs = with pkgs; [sqlite];
 
-      zigCheckFlags = "-Dzqlite";
+      zigCheckFlags = toString [
+        "-Dotel"
+        "-Dzqlite"
+      ];
+
+      preCheck = ''
+        zig build generate \
+          "''${zigDefaultFlagsArray[@]}" \
+          $zigCheckFlags "''${zigCheckFlagsArray[@]}"
+      '';
 
       postCheck = ''
         touch $out

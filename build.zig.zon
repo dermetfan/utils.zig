@@ -6,9 +6,21 @@
             .url = "https://github.com/wrongnull/zigtrait/archive/4b431169c9226b3fe2bbba89f451e5c8bca4c5a3.tar.gz",
             .hash = "12208d1a1be506a77528120e9a485ba9d610f435d601b897eb5bfd9a3596d2e740a4",
         },
+
         .zqlite = .{
             .url = "https://github.com/karlseguin/zqlite.zig/archive/997d3ac5156bcc9990168ad92caec6ed0cd5cbd8.tar.gz",
             .hash = "1220321cdb273d1f6e90b04fc747cae49dac1ae3d7db4125f590d2c0df5c4aadcc88",
+            .lazy = true,
+        },
+
+        .protobuf = .{
+            .url = "https://github.com/Arwalk/zig-protobuf/archive/eed464eaf55fefa913d33b9a6207f17e5e9d5e0f.tar.gz",
+            .hash = "12203125a3240fe8adbe46e4ccdb103e1648881cf4ca74d23465ef8f845b0d5d3d8b",
+            .lazy = true,
+        },
+        .@"opentelemetry-proto" = .{
+            .url = "https://github.com/open-telemetry/opentelemetry-proto/archive/refs/tags/v1.3.2.tar.gz",
+            .hash = "122089fe2a917c05d4944ead1e926d553088e45fc30a7b985dbf806f18e0f7f0cee0",
             .lazy = true,
         },
     },

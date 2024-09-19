@@ -5,6 +5,7 @@
 
   perSystem = {
     config,
+    lib,
     pkgs,
     ...
   }: {
@@ -17,6 +18,9 @@
         # TODO remove once merged: https://github.com/NixOS/nixpkgs/pull/310588
         # Set to `/build/tmp.XXXXXXXXXX` by the zig hook.
         unset ZIG_GLOBAL_CACHE_DIR
+
+        # If set, zig-protobuf respects this instead of downloading a binary.
+        export PROTOC_PATH=${lib.getExe pkgs.protobuf}
       '';
     };
   };
