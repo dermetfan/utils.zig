@@ -84,12 +84,9 @@ pub const lib = struct {
             const self: *@This() = @fieldParentPtr("step", step);
             const src_dir_path = self.inner.options.source_dir.getPath2(step.owner, step);
 
-            std.fs.accessAbsolute(src_dir_path, .{}) catch |err| switch (err) {
-                error.FileNotFound => {
-                    step.result_cached = true;
-                    return;
-                },
-                else => return err,
+            std.fs.accessAbsolute(src_dir_path, .{}) catch |err| return switch (err) {
+                error.FileNotFound => step.result_cached = true,
+                else => err,
             };
 
             try self.inner.step.makeFn(&self.inner.step, progress_node);
