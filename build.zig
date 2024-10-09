@@ -7,35 +7,34 @@ pub fn build(b: *Build) !void {
         .optimize = b.standardOptimizeOption(.{}),
     };
 
-    const lib_mod = b.addModule("lib", .{
+    const utils_mod = b.addModule("utils", .{
         .root_source_file = b.path("src/root.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
     });
-    configureModule(b, lib_mod, opts);
+    configureModule(b, utils_mod, opts);
 
     const test_step = b.step("test", "Run unit tests");
     {
-        const lib_mod_test = b.addTest(.{
-            .name = "lib",
-            .root_source_file = lib_mod.root_source_file.?,
+        const utils_mod_test = b.addTest(.{
+            .root_source_file = utils_mod.root_source_file.?,
             .target = opts.target,
             .optimize = opts.optimize,
         });
-        configureModule(b, &lib_mod_test.root_module, opts);
+        configureModule(b, &utils_mod_test.root_module, opts);
 
-        const run_lib_mod_test = b.addRunArtifact(lib_mod_test);
-        test_step.dependOn(&run_lib_mod_test.step);
+        const run_utils_mod_test = b.addRunArtifact(utils_mod_test);
+        test_step.dependOn(&run_utils_mod_test.step);
     }
 
-    _ = lib.addCheckTls(b);
+    _ = utils.addCheckTls(b);
 }
 
 fn configureModule(b: *Build, module: *Build.Module, opts: anytype) void {
     module.addImport("trait", b.dependency("trait", opts).module("zigtrait"));
 }
 
-pub const lib = struct {
+pub const utils = struct {
     pub fn addCheckTls(b: *Build) *Build.Step {
         const check_step = b.step("check", "Check compilation for errors");
 
