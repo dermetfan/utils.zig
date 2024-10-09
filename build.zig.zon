@@ -10,13 +10,6 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "root.zig",
-        "enums.zig",
-        "fmt.zig",
-        "mem.zig",
-        "meta.zig",
-        "nix.zig",
-        "nix",
-        "wasm.zig",
+        "src",
     },
 }

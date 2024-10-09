@@ -8,7 +8,7 @@ pub fn build(b: *Build) !void {
     };
 
     const lib_mod = b.addModule("lib", .{
-        .root_source_file = b.path("root.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
     });
