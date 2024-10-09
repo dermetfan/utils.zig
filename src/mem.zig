@@ -126,6 +126,24 @@ test copySlicesForwards {
     try std.testing.expectEqualStrings("0123456789", &dest);
 }
 
+pub fn comptimeJoin(comptime strs: []const []const u8, comptime sep: []const u8) []const u8 {
+    comptime var result: []const u8 = "";
+    inline for (strs, 0..) |str, i| {
+        result = result ++ str;
+        if (i + 1 < strs.len) result = result ++ sep;
+    }
+    return result;
+}
+
+test comptimeJoin {
+    try std.testing.expectEqualStrings(
+        \\a, b, c
+    , comptimeJoin(&.{ "a", "b", "c" }, ", "));
+    try std.testing.expectEqualStrings(
+        \\a
+    , comptimeJoin(&.{"a"}, ", "));
+}
+
 pub fn Cloned(comptime T: type) type {
     return struct {
         arena: *std.heap.ArenaAllocator,

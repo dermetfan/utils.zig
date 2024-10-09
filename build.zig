@@ -1,27 +1,47 @@
 const std = @import("std");
 const Build = std.Build;
 
+pub const Options = struct {
+    target: Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+
+    zqlite: bool,
+};
+
 pub fn build(b: *Build) !void {
-    const opts = .{
+    const options = Options{
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
+
+        .zqlite = b.option(bool, "zqlite", "Enable the zqlite utils") orelse false,
+    };
+
+    const options_mod = options_mod: {
+        const src = b.addOptions();
+        src.addOption(bool, "zqlite", options.zqlite);
+        break :options_mod src.createModule();
     };
 
     const utils_mod = b.addModule("utils", .{
         .root_source_file = b.path("src/root.zig"),
-        .target = opts.target,
-        .optimize = opts.optimize,
+        .target = options.target,
+        .optimize = options.optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = options_mod },
+        },
     });
-    configureModule(b, utils_mod, opts);
+    addDependencyImports(b, utils_mod, options);
 
     const test_step = b.step("test", "Run unit tests");
     {
         const utils_mod_test = b.addTest(.{
             .root_source_file = utils_mod.root_source_file.?,
-            .target = opts.target,
-            .optimize = opts.optimize,
+            .target = options.target,
+            .optimize = options.optimize,
         });
-        configureModule(b, &utils_mod_test.root_module, opts);
+        addDependencyImports(b, &utils_mod_test.root_module, options);
+        linkSystemLibraries(&utils_mod_test.root_module, options);
+        utils_mod_test.root_module.addImport("build_options", options_mod);
 
         const run_utils_mod_test = b.addRunArtifact(utils_mod_test);
         test_step.dependOn(&run_utils_mod_test.step);
@@ -30,8 +50,24 @@ pub fn build(b: *Build) !void {
     _ = utils.addCheckTls(b);
 }
 
-fn configureModule(b: *Build, module: *Build.Module, opts: anytype) void {
-    module.addImport("trait", b.dependency("trait", opts).module("zigtrait"));
+fn addDependencyImports(b: *Build, module: *Build.Module, options: Options) void {
+    const common_options = .{
+        .target = options.target,
+        .optimize = options.optimize,
+    };
+
+    module.addImport("trait", b.dependency("trait", common_options).module("zigtrait"));
+
+    if (options.zqlite) {
+        module.addImport("zqlite", (b.lazyDependency("zqlite", common_options) orelse return).module("zqlite"));
+    }
+}
+
+fn linkSystemLibraries(module: *Build.Module, options: Options) void {
+    if (options.zqlite) {
+        module.link_libc = true;
+        module.linkSystemLibrary("sqlite3", .{});
+    }
 }
 
 pub const utils = struct {
