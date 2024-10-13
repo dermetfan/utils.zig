@@ -88,37 +88,77 @@
 
                     # builds the $ZIG_GLOBAL_CACHE_DIR/p directory
                     # newer zig versions can consume this directly using --system
-                    deps =
+                    deps = let
+                      buildZigZonDir = builtins.dirOf buildZigZon;
+                    in
                       runCommand (with finalAttrs; "${pname}-${version}-deps") {
                         nativeBuildInputs = [zig];
 
                         outputHashMode = "recursive";
                         outputHashAlgo = "sha256";
                         outputHash = zigDepsHash;
-                      } ''
-                        mkdir "$TMPDIR"/{src,cache}
+                      } (
+                        ''
+                          mkdir "$TMPDIR"/{src,cache}
 
-                        shopt -s nullglob
-                        cp --recursive --symbolic-link ${src}/* ${src}/.* "$TMPDIR"/src/
-                        cd "$TMPDIR"/src
-                        cd ${lib.escapeShellArg (builtins.dirOf buildZigZon)}
+                          shopt -s nullglob
+                          cp --recursive --symbolic-link \
+                            ${src}/* \
+                            ${src}/.* \
+                            "$TMPDIR"/src/
+                          cd "$TMPDIR"/src
+                        ''
+                        + (
+                          lib.foldl
+                          (
+                            acc: component: let
+                              path = lib.path.subpath.join [acc.path component];
+                            in
+                              acc
+                              // {
+                                inherit path;
+                                script =
+                                  acc.script
+                                  + "\n"
+                                  + ''
+                                    chmod --recursive u+w ${lib.escapeShellArg component}
+                                    rm --recursive ${lib.escapeShellArg component}
+                                    mkdir ${lib.escapeShellArg component}
+                                    cp --recursive --symbolic-link \
+                                      ${src}/${lib.escapeShellArg path}/* \
+                                      ${src}/${lib.escapeShellArg path}/.* \
+                                      ${lib.escapeShellArg component}
+                                    cd ${lib.escapeShellArg component}
+                                  '';
+                              }
+                          )
+                          {
+                            path = ".";
+                            script = "";
+                          }
+                          (lib.path.subpath.components buildZigZonDir)
+                        )
+                        .script
+                        + ''
+                          cd "$TMPDIR"/src/${lib.escapeShellArg buildZigZonDir}
 
-                        # `zig build --fetch` does not fetch lazy dependencies
-                        # so we make them all eager to make sure they are all present.
-                        # XXX Of course this means that we fetch all dependencies
-                        # even if the build does not actually need them.
-                        # see https://github.com/ziglang/zig/issues/20976
-                        rm build.zig.zon
-                        sed 's/\.lazy[[:space:]]*=[[:space:]]*true[[:space:]]*,\?//' > build.zig.zon \
-                          ${src}/${lib.escapeShellArg (builtins.dirOf buildZigZon)}/build.zig.zon
+                          # `zig build --fetch` does not fetch lazy dependencies
+                          # so we make them all eager to make sure they are all present.
+                          # XXX Of course this means that we fetch all dependencies
+                          # even if the build does not actually need them.
+                          # see https://github.com/ziglang/zig/issues/20976
+                          rm build.zig.zon
+                          sed 's/\.lazy[[:space:]]*=[[:space:]]*true[[:space:]]*,\?//' > build.zig.zon \
+                            ${src}/${lib.escapeShellArg buildZigZon}
 
-                        zig build --fetch \
-                          --cache-dir "$TMPDIR" \
-                          --global-cache-dir "$TMPDIR"/cache
+                          zig build --fetch \
+                            --cache-dir "$TMPDIR" \
+                            --global-cache-dir "$TMPDIR"/cache
 
-                        # create an empty directory if there are no dependencies
-                        mv "$TMPDIR"/cache/p $out || mkdir $out
-                      '';
+                          # create an empty directory if there are no dependencies
+                          mv "$TMPDIR"/cache/p $out || mkdir $out
+                        ''
+                      );
                   }
                   // args.passthru or {};
               }
