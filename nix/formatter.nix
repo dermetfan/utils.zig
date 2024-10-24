@@ -14,6 +14,10 @@
           "unquoted_uri"
         ];
       };
+      zig.enable = true;
     };
+    settings.formatter.zig.excludes = [
+      "nix/overlays/zig/package-info.zig"
+    ];
   };
 }
