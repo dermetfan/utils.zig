@@ -286,6 +286,24 @@ test SubStruct {
     try std.testing.expectEqualStrings("c", sub_field_names[1]);
 }
 
+pub fn WithoutDecls(comptime T: type) type {
+    var info = @typeInfo(T);
+
+    switch (info) {
+        inline .Struct, .Enum, .Union => |*active_info| active_info.decls = &.{},
+        inline else => |_, tag| @compileError(@tagName(tag) ++ " " ++ @typeName(T) ++ " cannot have declarations"),
+    }
+
+    return @Type(info);
+}
+
+test WithoutDecls {
+    _ = WithoutDecls(struct {});
+    _ = WithoutDecls(enum {});
+    _ = WithoutDecls(union {});
+    _ = WithoutDecls(union(enum) {});
+}
+
 pub fn FieldInfo(comptime T: type) type {
     return std.meta.Elem(@TypeOf(std.meta.fields(T)));
 }
