@@ -505,7 +505,11 @@ pub const ChildProcessDiagnostics = struct {
     }
 };
 
+/// Some options are optional to support older Nix versions
+/// or because they only appear once their corresponding
+/// experimental feature is enabled.
 pub const Config = struct {
+    @"abort-on-warn": ?Option(bool) = null,
     @"accept-flake-config": Option(bool),
     @"access-tokens": Option(std.json.ArrayHashMap([]const u8)),
     @"allow-dirty": Option(bool),
@@ -522,19 +526,27 @@ pub const Config = struct {
     @"bash-prompt": Option([]const u8),
     @"bash-prompt-prefix": Option([]const u8),
     @"bash-prompt-suffix": Option([]const u8),
+    @"build-dir": ?Option(?[]const u8) = null,
     @"build-hook": Option([]const []const u8),
     @"build-poll-interval": Option(u16),
     @"build-users-group": Option([]const u8),
     builders: Option([]const u8),
     @"builders-use-substitutes": Option(bool),
+    // Called `commit-lock-file-summary` (note the additional dash) since Nix 2.23.
+    // Newer Nix versions have an alias for the old name
+    // so we use the old name to support both old and new versions.
     @"commit-lockfile-summary": Option([]const u8),
     @"compress-build-log": Option(bool),
     @"connect-timeout": Option(u16),
     cores: Option(u16),
+    @"debugger-on-trace": ?Option(bool) = null,
+    @"debugger-on-warn": ?Option(bool) = null,
     @"diff-hook": Option(?[]const u8),
     @"download-attempts": Option(u16),
+    @"download-buffer-size": ?Option(usize) = null,
     @"download-speed": Option(u32),
     @"eval-cache": Option(bool),
+    @"eval-system": ?Option([]const u8) = null,
     @"experimental-features": Option([]const []const u8),
     @"extra-platforms": Option([]const []const u8),
     fallback: Option(bool),
@@ -558,6 +570,7 @@ pub const Config = struct {
     @"keep-outputs": Option(bool),
     @"log-lines": Option(u32),
     @"max-build-log-size": Option(u64),
+    @"max-call-depth": ?Option(u16) = null,
     @"max-free": Option(u64),
     @"max-jobs": Option(u16),
     @"max-silent-time": Option(u32),
@@ -569,6 +582,8 @@ pub const Config = struct {
     @"narinfo-cache-positive-ttl": Option(u32),
     @"netrc-file": Option([]const u8),
     @"nix-path": Option([]const []const u8),
+    @"nix-shell-always-looks-for-shell-nix": ?Option(bool) = null,
+    @"nix-shell-shebang-arguments-relative-to-script": ?Option(bool) = null,
     @"plugin-files": Option([]const []const u8),
     @"post-build-hook": Option([]const u8),
     @"pre-build-hook": Option([]const u8),
@@ -599,6 +614,7 @@ pub const Config = struct {
     timeout: Option(u32),
     @"trace-function-calls": Option(bool),
     @"trace-verbose": Option(bool),
+    @"trust-tarballs-from-git-forges": ?Option(bool) = null,
     @"trusted-public-keys": Option([]const []const u8),
     @"trusted-substituters": Option([]const []const u8),
     @"trusted-users": Option([]const []const u8),
@@ -610,6 +626,7 @@ pub const Config = struct {
     @"use-xdg-base-directories": Option(bool),
     @"user-agent-suffix": Option([]const u8),
     @"warn-dirty": Option(bool),
+    @"warn-large-path-threshold": ?Option(u64) = null,
 
     pub fn Option(comptime T: type) type {
         return struct {
@@ -620,6 +637,46 @@ pub const Config = struct {
             experimentalFeature: ?[]const u8,
             value: T,
         };
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const value = try std.json.innerParse(std.json.Value, arena.allocator(), source, options);
+
+        return jsonParseFromValue(allocator, value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
+        if (source != .object) return error.UnexpectedToken;
+
+        var self: @This() = undefined;
+
+        inline for (std.meta.fields(@This())) |field| {
+            const option_object = source.object.get(field.name) orelse alias: for (source.object.keys()) |key| {
+                const option_object = source.object.get(key).?;
+                if (option_object != .object) return error.UnexpectedToken;
+
+                const aliases_array = option_object.object.get("aliases") orelse return error.MissingField;
+                if (aliases_array != .array) return error.UnexpectedToken;
+
+                for (aliases_array.array.items) |alias_string| {
+                    if (alias_string != .string) return error.UnexpectedToken;
+
+                    if (!std.mem.eql(u8, alias_string.string, field.name)) continue;
+
+                    break :alias option_object;
+                }
+            } else if (field.default_value) |default_value| {
+                @field(self, field.name) = @as(*align(1) const field.type, @ptrCast(default_value)).*;
+                comptime continue;
+            } else return error.MissingField;
+
+            @field(self, field.name) = try std.json.innerParseFromValue(field.type, allocator, option_object, options);
+        }
+
+        return self;
     }
 };
 
@@ -816,6 +873,13 @@ pub fn impl(
                 .ignore_unknown_fields = true,
                 .allocate = .alloc_always,
             });
+        }
+
+        test config {
+            // this test spawns a process
+            if (true) return error.SkipZigTest;
+
+            (try config(std.testing.allocator, null)).deinit();
         }
 
         pub fn flakeMetadata(
