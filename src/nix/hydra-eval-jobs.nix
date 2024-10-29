@@ -56,7 +56,8 @@ flake: let
   result = let
     jobAttrs =
       flake.hydraJobs
-      or (flake.checks or throw "flake does not provide any Hydra jobs or checks");
+      or flake.checks
+      or (throw "flake does not provide any Hydra jobs or checks");
 
     jobAttrPaths = lib.collectAttrPaths lib.isDerivation jobAttrs;
   in
