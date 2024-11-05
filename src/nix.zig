@@ -708,15 +708,23 @@ pub const FailedBuilds = struct {
     }
 
     /// Duplicates the slices taken from `stderr` so you can free it after the call.
-    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr: []const u8) !@This() {
+    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr_reader: anytype) !@This() {
         var builds = std.StringArrayHashMapUnmanaged(void){};
         defer builds.deinit(allocator);
 
         var dependents = std.StringArrayHashMapUnmanaged(void){};
         defer dependents.deinit(allocator);
 
-        var iter = std.mem.splitScalar(u8, stderr, '\n');
-        while (iter.next()) |line| {
+        var line = std.ArrayListUnmanaged(u8){};
+        defer line.deinit(allocator);
+        const line_writer = line.writer(allocator);
+
+        line: while (true) : (line.clearRetainingCapacity()) {
+            stderr_reader.streamUntilDelimiter(line_writer, '\n', null) catch |err| switch (err) {
+                error.EndOfStream => break :line,
+                else => |e| return e,
+            };
+
             const readExpected = struct {
                 fn call(reader: anytype, comptime slice: []const u8) !bool {
                     var buf: [slice.len]u8 = undefined;
@@ -727,7 +735,7 @@ pub const FailedBuilds = struct {
             }.call;
 
             builds: {
-                var line_stream = std.io.fixedBufferStream(line);
+                var line_stream = std.io.fixedBufferStream(line.items);
                 const line_reader = line_stream.reader();
 
                 var drv_list = std.ArrayListUnmanaged(u8){};
@@ -745,7 +753,7 @@ pub const FailedBuilds = struct {
             }
 
             foreign_builds: {
-                var line_stream = std.io.fixedBufferStream(line);
+                var line_stream = std.io.fixedBufferStream(line.items);
                 const line_reader = line_stream.reader();
 
                 var drv_list = std.ArrayListUnmanaged(u8){};
@@ -771,7 +779,7 @@ pub const FailedBuilds = struct {
             }
 
             dependents: {
-                var line_stream = std.io.fixedBufferStream(line);
+                var line_stream = std.io.fixedBufferStream(line.items);
                 const line_reader = line_stream.reader();
 
                 var drv_list = std.ArrayListUnmanaged(u8){};
