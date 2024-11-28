@@ -18,7 +18,7 @@ pub fn ReadError(comptime Reader: type, allocates: bool) type {
 
 /// Returns the number of padding bytes.
 pub fn padding(len: usize) std.math.IntFittingRange(0, block_len) {
-    return if (len % block_len == 0) 0 else @intCast(block_len - len % block_len);
+    return @intCast((block_len - len % block_len) % block_len);
 }
 
 test padding {
