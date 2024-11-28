@@ -132,8 +132,8 @@ test FieldsTuple {
     };
     const Tuple = FieldsTuple(Struct);
 
-    try std.testing.expectEqual(std.meta.fieldInfo(Struct, .a).type, std.meta.fieldInfo(Tuple, .@"0").type);
-    try std.testing.expectEqual(std.meta.fieldInfo(Struct, .b).type, std.meta.fieldInfo(Tuple, .@"1").type);
+    try std.testing.expectEqual(std.meta.FieldType(Struct, .a), std.meta.FieldType(Tuple, .@"0"));
+    try std.testing.expectEqual(std.meta.FieldType(Struct, .b), std.meta.FieldType(Tuple, .@"1"));
     try std.testing.expectEqual(2, @as(Tuple, undefined).len);
 }
 

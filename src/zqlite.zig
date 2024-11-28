@@ -128,7 +128,7 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type,
             };
         }
 
-        fn column(result: zqlite.Row, comptime col: Column) GetterResult(std.meta.fieldInfo(Row, col).type) {
+        fn column(result: zqlite.Row, comptime col: Column) GetterResult(std.meta.FieldType(Row, col)) {
             const info = std.meta.fieldInfo(Row, col);
             const index = std.meta.fieldIndex(Row, info.name).?;
             return getter(info.type)(result, index);
@@ -378,7 +378,7 @@ pub fn structFromRow(
                 .Optional => |optional| if (value) |v| try self.clone(optional.child, v) else null,
 
                 else => switch (T) {
-                    zqlite.Blob => .{ .value = try self.clone(std.meta.fieldInfo(T, .value).type, value) },
+                    zqlite.Blob => .{ .value = try self.clone(std.meta.FieldType(T, .value), value) },
                     else => value,
                 },
             };

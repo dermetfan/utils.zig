@@ -51,7 +51,7 @@ pub const ProxyDuplexControl = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator) @This() {
-        return .{ .pipes = std.meta.fieldInfo(@This(), .pipes).type.init(allocator) };
+        return .{ .pipes = std.meta.FieldType(@This(), .pipes).init(allocator) };
     }
 
     fn register(self: *@This()) (std.mem.Allocator.Error || posix.PipeError)!posix.fd_t {
