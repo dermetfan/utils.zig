@@ -7,6 +7,25 @@ const meta = @import("meta.zig");
 
 const posix = std.posix;
 
+/// Employs the "double forking" method: fork, setsid, fork.
+/// Does not close any file descriptors or change the working directory.
+/// Returns whether the caller is the parent and should therefore exit.
+pub fn daemonize() posix.ForkError!bool {
+    if (try posix.fork() != 0)
+        return true;
+
+    switch (posix.errno(@as(i64, @intCast(posix.system.setsid())))) {
+        .SUCCESS => {},
+        .PERM => unreachable,
+        else => |errno| return posix.unexpectedErrno(errno),
+    }
+
+    if (try posix.fork() != 0)
+        return true;
+
+    return false;
+}
+
 pub const FileHandleType = enum {
     fd,
     socket,
