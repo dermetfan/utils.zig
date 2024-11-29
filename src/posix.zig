@@ -9,10 +9,20 @@ const posix = std.posix;
 
 /// Employs the "double forking" method: fork, setsid, fork.
 /// Does not close any file descriptors or change the working directory.
-/// Returns whether the caller is the parent and should therefore exit.
-pub fn daemonize() posix.ForkError!bool {
-    if (try posix.fork() != 0)
-        return true;
+pub fn daemonize() posix.ForkError!union(enum) {
+    /// The caller is the parent
+    /// and therefore likely wants to exit.
+    parent: posix.pid_t,
+    /// The caller is the first child and the daemon's parent
+    /// and therefore likely wants to exit.
+    intermediate: posix.pid_t,
+    /// The caller is the daemon.
+    daemon,
+} {
+    switch (try posix.fork()) {
+        else => |pid| return .{ .parent = pid },
+        0 => {},
+    }
 
     switch (posix.errno(@as(i64, @intCast(posix.system.setsid())))) {
         .SUCCESS => {},
@@ -20,10 +30,10 @@ pub fn daemonize() posix.ForkError!bool {
         else => |errno| return posix.unexpectedErrno(errno),
     }
 
-    if (try posix.fork() != 0)
-        return true;
-
-    return false;
+    return switch (try posix.fork()) {
+        else => |pid| return .{ .intermediate = pid },
+        0 => .daemon,
+    };
 }
 
 pub const FileHandleType = enum {
