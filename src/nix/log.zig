@@ -71,6 +71,39 @@ pub const Action = union(enum) {
         debug,
         vomit,
 
+        /// See `comptimeCli()`.
+        pub fn cli(self: @This(), shorthands: bool) []const []const u8 {
+            return self.comptimeCli(shorthands, .{}, .{});
+        }
+
+        /// Returns the command line flags to pass to nix
+        /// to make its log verbosity match.
+        pub fn comptimeCli(
+            self: @This(),
+            /// Use combined flag shorthands if possible.
+            shorthands: bool,
+            /// Prepend this at comptime.
+            head: anytype,
+            /// Append this at comptime.
+            tail: anytype,
+        ) []const []const u8 {
+            return switch (@intFromEnum(self)) {
+                inline 0...2 => |n| &(head ++ .{"--quiet"} ** (2 - n) ++ tail),
+                inline else => |n| if (shorthands)
+                    &(head ++ .{"-" ++ "v" ** (n - 2)} ++ tail)
+                else
+                    &(head ++ .{"--verbose"} ** (n - 2) ++ tail),
+            };
+        }
+
+        test comptimeCli {
+            try std.testing.expectEqual(0, @This().notice.comptimeCli(false, .{}, .{}).len);
+            try std.testing.expectEqualDeep(&[_][]const u8{ "head", "--quiet", "--quiet", "tail" }, @This().@"error".comptimeCli(true, .{"head"}, .{"tail"}));
+            try std.testing.expectEqualDeep(&[_][]const u8{"--quiet"}, @This().warn.comptimeCli(false, .{}, .{}));
+            try std.testing.expectEqualDeep(&[_][]const u8{ "--verbose", "--verbose" }, @This().talkative.comptimeCli(false, .{}, .{}));
+            try std.testing.expectEqualDeep(&[_][]const u8{ "foo", "bar", "-vvv" }, @This().chatty.comptimeCli(true, .{ "foo", "bar" }, .{}));
+        }
+
         pub fn jsonStringify(self: @This(), write_stream: anytype) !void {
             try write_stream.write(@intFromEnum(self));
         }
