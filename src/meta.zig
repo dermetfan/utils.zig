@@ -137,6 +137,39 @@ test FieldsTuple {
     try std.testing.expectEqual(2, @as(Tuple, undefined).len);
 }
 
+pub fn NamedArgs(Function: type, names: []const [:0]const u8) type {
+    return @Type(.{ .Struct = std.builtin.Type.Struct{
+        .layout = .auto,
+        .backing_integer = null,
+        .decls = &.{},
+        .fields = fields: {
+            var fields: []const std.builtin.Type.StructField = &.{};
+            for (@typeInfo(Function).Fn.params, names) |param, name|
+                fields = fields ++ .{.{
+                    .name = name,
+                    .type = param.type orelse @compileError("`NamedArgs()` does not support generic parameters"),
+                    .default_value = null,
+                    .is_comptime = false,
+                    .alignment = @alignOf(param.type.?),
+                }};
+            break :fields fields;
+        },
+        .is_tuple = false,
+    } });
+}
+
+test NamedArgs {
+    const Func = @TypeOf(struct {
+        fn func(_: u1, _: u2, _: u3) void {}
+    }.func);
+    const NamedFuncArgs = NamedArgs(Func, &.{ "a", "b", "c" });
+
+    try std.testing.expectEqual(std.meta.FieldType(NamedFuncArgs, .a), std.meta.FieldType(std.meta.ArgsTuple(Func), .@"0"));
+    try std.testing.expectEqual(std.meta.FieldType(NamedFuncArgs, .b), std.meta.FieldType(std.meta.ArgsTuple(Func), .@"1"));
+    try std.testing.expectEqual(std.meta.FieldType(NamedFuncArgs, .c), std.meta.FieldType(std.meta.ArgsTuple(Func), .@"2"));
+    try std.testing.expectEqual(3, @typeInfo(NamedFuncArgs).Struct.fields.len);
+}
+
 pub fn SubUnion(comptime Union: type, comptime fields: []const std.meta.FieldEnum(Union)) type {
     comptime var info = @typeInfo(Union).Union;
 
