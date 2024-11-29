@@ -272,7 +272,7 @@ pub fn proxyDuplex(
                 src_kind: FileHandleType,
                 src_poll_fd: *posix.pollfd,
                 fifo: *std.fifo.LinearFifo(u8, .Dynamic),
-                dst_poll_fd: *std.posix.pollfd,
+                dst_poll_fd: *posix.pollfd,
             ) !void {
                 if (src_poll_fd.revents & POLL.IN == 0) return;
 
