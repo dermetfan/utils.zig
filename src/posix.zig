@@ -12,15 +12,21 @@ const posix = std.posix;
 pub fn daemonize() posix.ForkError!union(enum) {
     /// The caller is the parent
     /// and therefore likely wants to exit.
-    parent: posix.pid_t,
+    parent,
     /// The caller is the first child and the daemon's parent
-    /// and therefore likely wants to exit.
+    /// and therefore should exit soon
+    /// because the parent is waiting on it.
+    /// The value is the daemon's PID.
     intermediate: posix.pid_t,
     /// The caller is the daemon.
     daemon,
 } {
     switch (try posix.fork()) {
-        else => |pid| return .{ .parent = pid },
+        else => |intermediate_pid| {
+            // Wait to remove the intermediate zombie from the kernel's process table.
+            std.debug.assert(posix.waitpid(intermediate_pid, 0).pid == intermediate_pid);
+            return .parent;
+        },
         0 => {},
     }
 
@@ -31,7 +37,7 @@ pub fn daemonize() posix.ForkError!union(enum) {
     }
 
     return switch (try posix.fork()) {
-        else => |pid| return .{ .intermediate = pid },
+        else => |daemon_pid| return .{ .intermediate = daemon_pid },
         0 => .daemon,
     };
 }
