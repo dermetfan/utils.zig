@@ -74,18 +74,35 @@ pub const utils = struct {
     pub fn addCheckTls(b: *Build) *Build.Step {
         const check_step = b.step("check", "Check compilation for errors");
 
+        var checked = std.AutoHashMap(*const Build.Step, void).init(b.allocator);
+        defer checked.deinit();
+
         for (b.top_level_steps.values()) |tls|
-            addCheckTlsDependencies(check_step, &tls.step);
+            if (&tls.step != check_step)
+                addCheckTlsDependencies(check_step, &tls.step, &checked);
 
         return check_step;
     }
 
-    fn addCheckTlsDependencies(check_step: *Build.Step, step: *Build.Step) void {
+    fn addCheckTlsDependencies(
+        check_step: *Build.Step,
+        step: *Build.Step,
+        checked: *std.AutoHashMap(*const Build.Step, void),
+    ) void {
         if (step.id == .compile) {
-            if (std.mem.indexOfScalar(*Build.Step, check_step.dependencies.items, step) == null)
-                check_step.dependOn(step);
+            if (checked.contains(step)) return;
+            checked.put(step, {}) catch @panic("OOM");
+
+            const compile = step.cast(Build.Step.Compile).?;
+
+            var check_compile = step.owner.allocator.create(Build.Step.Compile) catch @panic("OOM");
+            check_compile.* = compile.*;
+            check_compile.step.name = std.mem.concat(step.owner.allocator, u8, &.{ "check ", step.name }) catch @panic("OOM");
+            check_compile.generated_bin = null;
+
+            check_step.dependOn(&check_compile.step);
         } else for (step.dependencies.items) |dep_step|
-            addCheckTlsDependencies(check_step, dep_step);
+            addCheckTlsDependencies(check_step, dep_step, checked);
     }
 
     /// Like `std.Build.Step.InstallDir`
