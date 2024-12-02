@@ -7,12 +7,18 @@ const meta = @import("meta.zig");
 
 const posix = std.posix;
 
+pub fn DaemonizeError(get_daemon_pid: bool) type {
+    return (if (get_daemon_pid) posix.MMapError else error{}) ||
+        posix.ForkError;
+}
+
 /// Employs the "double forking" method: fork, setsid, fork.
 /// Does not close any file descriptors or change the working directory.
-pub fn daemonize() posix.ForkError!union(enum) {
+pub fn daemonize(comptime get_daemon_pid: bool) DaemonizeError(get_daemon_pid)!union(enum) {
     /// The caller is the parent
-    /// and therefore likely wants to exit.
-    parent,
+    /// and therefore may want to exit.
+    /// The value is the daemon's PID.
+    parent: if (get_daemon_pid) posix.pid_t else void,
     /// The caller is the first child and the daemon's parent
     /// and therefore should exit soon
     /// because the parent is waiting on it.
@@ -21,11 +27,23 @@ pub fn daemonize() posix.ForkError!union(enum) {
     /// The caller is the daemon.
     daemon,
 } {
+    const daemon_pid_mem = if (get_daemon_pid) try posix.mmap(
+        null,
+        @sizeOf(posix.pid_t),
+        posix.PROT.READ | posix.PROT.WRITE,
+        .{ .TYPE = .SHARED, .ANONYMOUS = true },
+        -1,
+        0,
+    );
+    defer if (get_daemon_pid) posix.munmap(daemon_pid_mem);
+    const daemon_pid = if (get_daemon_pid) std.mem.bytesAsValue(posix.pid_t, daemon_pid_mem);
+
     switch (try posix.fork()) {
-        else => |intermediate_pid| {
-            // Wait to remove the intermediate zombie from the kernel's process table.
-            std.debug.assert(posix.waitpid(intermediate_pid, 0).pid == intermediate_pid);
-            return .parent;
+        else => |pid| {
+            // Wait for `daemon_pid` to be written and
+            // remove the intermediate zombie from the kernel's process table.
+            std.debug.assert(posix.waitpid(pid, 0).pid == pid);
+            return .{ .parent = if (get_daemon_pid) daemon_pid.* };
         },
         0 => {},
     }
@@ -37,7 +55,10 @@ pub fn daemonize() posix.ForkError!union(enum) {
     }
 
     return switch (try posix.fork()) {
-        else => |daemon_pid| return .{ .intermediate = daemon_pid },
+        else => |pid| {
+            if (get_daemon_pid) daemon_pid.* = pid;
+            return .{ .intermediate = pid };
+        },
         0 => .daemon,
     };
 }
