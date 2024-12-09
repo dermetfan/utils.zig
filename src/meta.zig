@@ -54,7 +54,7 @@ pub fn hashMapInfo(comptime T: type) struct {
     return .{
         .K = K,
         .V = V,
-        .managed = trait.hasField("unmanaged")(T),
+        .managed = @hasField(T, "unmanaged"),
     };
 }
 
