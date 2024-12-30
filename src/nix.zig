@@ -155,7 +155,10 @@ pub const FlakeMetadata = struct {
 
     /// As of Nix 2.20, the manual says
     /// the key should be called `lockedUrl`,
-    /// but it is actually called just `url`.
+    /// but it is actually called just `url`:
+    /// https://github.com/NixOS/nix/blob/d9775222fbfa7e5d8ce1f722ea2968ff840324b4/src/nix/flake.cc#L218
+    /// This has been wrong from the start:
+    /// https://github.com/NixOS/nix/commit/68b43e01ddf990182c87a924d647dc7aa93b34f7#diff-98db1e334292594945051880fac0aecb52c9206898bd3cbc79730d647b260824R108
     url: []const u8,
 
     pub const Source = struct {
