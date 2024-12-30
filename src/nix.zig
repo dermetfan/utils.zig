@@ -211,11 +211,18 @@ pub const FlakeMetadata = struct {
                 (if (self.revCount != null) self.lastModified != null else true);
         }
 
-        /// Returns the canonical URL-like form without locking information.
+        /// Returns the canonical URL-like form.
         // XXX Properly implement this by switching on `self.type` and
         // building a URL exactly like its corresponding `toURL()` function
         // in Nix' `src/libfetchers/*.cc` does.
-        pub fn toUrl(self: @This(), allocator: std.mem.Allocator) !std.Uri {
+        pub fn toUrl(
+            self: @This(),
+            allocator: std.mem.Allocator,
+            /// Whether to include information obtained from locking, if present.
+            /// This is only `narHash`
+            /// because `revCount` and `lastModified` are not emitted by Nix either.
+            locked: bool,
+        ) !std.Uri {
             var allocated_strings = std.ArrayList([]const u8).init(allocator);
             defer allocated_strings.deinit();
             errdefer for (allocated_strings.items) |allocated_string|
@@ -318,6 +325,9 @@ pub const FlakeMetadata = struct {
 
                 if (self.type == .git)
                     if (self.shallow orelse true) try query_args.put(allocator, "shallow", "1");
+
+                if (locked)
+                    if (self.narHash) |narHash| try query_args.put(allocator, "narHash", narHash);
 
                 if (query_args.count() == 0) break :query if (url) |u| u.query else null;
 
@@ -432,42 +442,42 @@ pub const FlakeMetadata = struct {
                 .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                 .dir = "nix",
                 .submodules = true,
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
 
             try std.testing.expectFmt("path:/cizero?dir=nix", "{}", .{try (Source{
                 .type = .path,
                 .path = "/cizero",
                 .dir = "nix",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
 
             try std.testing.expectFmt("git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&shallow=1&submodules=1", "{}", .{try (Source{
                 .type = .git,
                 .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
             try std.testing.expectFmt("hg+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1", "{}", .{try (Source{
                 .type = .mercurial,
                 .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
             try std.testing.expectFmt("tarball+https://example.com:42/cizero.tar.gz?dir=nix", "{}", .{try (Source{
                 .type = .tarball,
                 .url = "https://example.com:42/cizero.tar.gz?dir=nix",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
             try std.testing.expectFmt("file+https://example.com:42/cizero.tar.gz?dir=nix", "{}", .{try (Source{
                 .type = .file,
                 .url = "https://example.com:42/cizero.tar.gz?dir=nix",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
 
             try std.testing.expectFmt("git+file:/cizero?shallow=1&submodules=1", "{}", .{try (Source{
                 .type = .git,
                 .url = "file:/cizero?submodules=1",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
 
             try std.testing.expectFmt("github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "{}", .{try (Source{
                 .type = .github,
                 .owner = "input-output-hk",
                 .repo = "cizero",
                 .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
 
             try std.testing.expectFmt("github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com&submodules=1", "{}", .{try (Source{
                 .type = .github,
@@ -477,7 +487,7 @@ pub const FlakeMetadata = struct {
                 .host = "example.com",
                 .dir = "nix",
                 .submodules = true,
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
             try std.testing.expectFmt("gitlab:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com&submodules=1", "{}", .{try (Source{
                 .type = .gitlab,
                 .owner = "input-output-hk",
@@ -486,7 +496,7 @@ pub const FlakeMetadata = struct {
                 .host = "example.com",
                 .dir = "nix",
                 .submodules = true,
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
             try std.testing.expectFmt("sourcehut:~input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com&submodules=1", "{}", .{try (Source{
                 .type = .sourcehut,
                 .owner = "~input-output-hk",
@@ -495,10 +505,12 @@ pub const FlakeMetadata = struct {
                 .host = "example.com",
                 .dir = "nix",
                 .submodules = true,
-            }).toUrl(allocator)});
+            }).toUrl(allocator, false)});
         }
 
-        /// Writes the URL-like form suitable to be passed to `--allowed-uris`.
+        /// Writes the URL-like form suitable to be passed to `--allowed-uris`,
+        /// possibly multiple times, separated by a space character,
+        /// in order to pass Nix' `allowed-uris` matching in all possible cases.
         pub fn writeAllowedUri(self: @This(), allocator: std.mem.Allocator, writer: anytype) !void {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
@@ -512,10 +524,9 @@ pub const FlakeMetadata = struct {
                 .query = true,
             };
 
-            const url = try self.toUrl(arena_allocator);
+            const url = try self.toUrl(arena_allocator, false);
 
             try url.writeToStream(write_to_stream_options, writer);
-            try writer.writeByte(' ');
 
             // Up until Nix 2.20, shorthands are translated
             // into their target URL and that is checked against,
@@ -540,8 +551,19 @@ pub const FlakeMetadata = struct {
                 // TODO gitlab
                 // TODO sourcehut
                 else => null,
-            }) |target_url|
+            }) |target_url| {
+                try writer.writeByte(' ');
                 try target_url.writeToStream(write_to_stream_options, writer);
+            }
+
+            // Some types include the `narHash` in the query.
+            // For example, GitHub inputs do since Nix 2.21:
+            // https://github.com/NixOS/nix/commit/841fd78baac507b1e97921afa3c2ebaeb6c65bfd#diff-be2f63dc22d73bd86ee70820979ee54ff2bb5cef76e3bbb53a673fddfd2a1b5cR146-R147
+            if (self.narHash) |_| {
+                try writer.writeByte(' ');
+                const url_locked = try self.toUrl(arena_allocator, true);
+                try url_locked.writeToStream(write_to_stream_options, writer);
+            }
         }
     };
 
