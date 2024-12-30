@@ -172,7 +172,7 @@ pub const FlakeMetadata = struct {
         shallow: ?bool = null,
         submodules: ?bool = null,
 
-        // can only be present if locked, not given by the user (read-only)
+        // can only be present if locked
         lastModified: ?i64 = null,
         revCount: ?u64 = null,
         narHash: ?[]const u8 = null,
