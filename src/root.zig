@@ -10,6 +10,7 @@ pub const mem = @import("mem.zig");
 pub const meta = @import("meta.zig");
 pub const nix = @import("nix.zig");
 pub const posix = @import("posix.zig");
+pub const uri = @import("uri.zig");
 pub const wasm = @import("wasm.zig");
 
 pub usingnamespace if (build_options.zqlite) struct {
