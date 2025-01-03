@@ -2,6 +2,7 @@ const std = @import("std");
 
 const mem = @import("mem.zig");
 const meta = @import("meta.zig");
+const uri = @import("uri.zig");
 
 pub const build_hook = @import("nix/build-hook.zig");
 
@@ -143,12 +144,12 @@ test recurseForDerivations {
 pub const FlakeMetadata = struct {
     description: ?[]const u8 = null,
     lastModified: i64,
-    locked: Source,
+    locked: Input,
     locks: Locks,
-    original: Source,
+    original: Input,
     originalUrl: []const u8,
     path: []const u8,
-    resolved: Source,
+    resolved: Input,
     resolvedUrl: []const u8,
     revision: []const u8,
     flake: bool = true,
@@ -161,273 +162,289 @@ pub const FlakeMetadata = struct {
     /// https://github.com/NixOS/nix/commit/68b43e01ddf990182c87a924d647dc7aa93b34f7#diff-98db1e334292594945051880fac0aecb52c9206898bd3cbc79730d647b260824R108
     url: []const u8,
 
-    pub const Source = struct {
-        type: Type,
-        id: ?[]const u8 = null,
-        url: ?[]const u8 = null,
-        host: ?[]const u8 = null,
-        path: ?[]const u8 = null,
-        dir: ?[]const u8 = null,
-        owner: ?[]const u8 = null,
-        repo: ?[]const u8 = null,
-        ref: ?[]const u8 = null,
-        rev: ?[]const u8 = null,
-        shallow: ?bool = null,
-        submodules: ?bool = null,
+    /// Basically a partial port of Nix' `src/libfetchers/*.cc`.
+    pub const Input = union(enum) {
+        indirect: IndirectScheme,
+        path: PathScheme,
+        git: GitScheme,
+        mercurial: MercurialScheme,
+        tarball: CurlScheme,
+        file: CurlScheme,
+        github: GitArchiveScheme,
+        gitlab: GitArchiveScheme,
+        sourcehut: GitArchiveScheme,
 
-        // can only be present if locked
-        lastModified: ?i64 = null,
-        revCount: ?u64 = null,
-        narHash: ?[]const u8 = null,
+        const Scheme = struct {
+            dir: ?[]const u8 = null,
+            narHash: ?[]const u8 = null,
+            lastModified: ?i64 = null,
+        };
 
-        pub const Type = enum { indirect, path, git, mercurial, tarball, file, github, gitlab, sourcehut };
+        pub const IndirectScheme = meta.MergedStructs(Scheme, struct {
+            id: []const u8,
+            ref: ?[]const u8 = null,
+            rev: ?[]const u8 = null,
+        });
 
-        pub fn immutable(self: @This()) bool {
-            return self.narHash != null or self.rev != null;
-        }
+        pub const PathScheme = meta.MergedStructs(Scheme, struct {
+            path: []const u8,
+            rev: ?[]const u8 = null,
+            revCount: u64 = 0,
+        });
 
-        // TODO do we already check all possible constraints?
-        pub fn valid(self: @This()) bool {
-            return switch (self.type) {
-                .indirect => self.id != null and
-                    self.path == null and
-                    self.owner == null and
-                    self.repo == null,
-                .path, .tarball, .file => self.shallow == null and
-                    self.submodules == null and
-                    self.owner == null and
-                    self.repo == null and
-                    self.host == null and
-                    self.id == null and
-                    self.ref == null and
-                    self.rev == null and
-                    self.revCount == null,
-                .git, .mercurial => self.url != null and
-                    if (self.rev != null) self.ref != null else true,
-                .github, .gitlab, .sourcehut => self.path == null and
-                    !(self.ref != null and self.rev != null),
-            } and
-                (if (self.lastModified != null) self.narHash != null else true) and
-                (if (self.revCount != null) self.lastModified != null else true);
-        }
+        pub const GitScheme = meta.MergedStructs(Scheme, struct {
+            url: []const u8,
+            ref: ?[]const u8 = null,
+            rev: ?[]const u8 = null,
+            shallow: bool = false,
+            submodules: bool = false,
+            exportIgnore: bool = false,
+            revCount: u64 = 0,
+            allRefs: bool = false,
 
-        /// Returns the canonical URL-like form.
-        // XXX Properly implement this by switching on `self.type` and
-        // building a URL exactly like its corresponding `toURL()` function
-        // in Nix' `src/libfetchers/*.cc` does.
-        pub fn toUrl(
-            self: @This(),
-            allocator: std.mem.Allocator,
-            /// Whether to include information obtained from locking, if present.
-            /// This is only `narHash`
-            /// because `revCount` and `lastModified` are not emitted by Nix either.
-            locked: bool,
-        ) !std.Uri {
-            var allocated_strings = std.ArrayList([]const u8).init(allocator);
-            defer allocated_strings.deinit();
-            errdefer for (allocated_strings.items) |allocated_string|
-                allocator.free(allocated_string);
+            // name: ?[]const u8, // XXX remove, seems to have no use
 
-            const url = if (self.url) |url| try std.Uri.parse(url) else null;
+            // XXX make sure these are the same as `rev` but with "-dirty" suffix
+            dirtyRev: ?[]const u8 = null,
+            dirtyShortRev: ?[]const u8 = null,
 
-            var result = if (url) |u| u else std.Uri{ .scheme = "" };
+            verifyCommit: bool = false,
+            keytype: ?[]const u8 = null,
+            publicKey: ?[]const u8 = null,
+            publicKeys: ?[]const u8 = null,
+        });
 
-            result.scheme = switch (self.type) {
-                .indirect => "flake",
-                .mercurial => scheme: {
-                    const scheme = try std.mem.concat(allocator, u8, &.{ "hg+", url.?.scheme });
-                    allocated_strings.append(scheme) catch |err| {
-                        allocator.free(scheme);
-                        return err;
-                    };
-                    break :scheme scheme;
-                },
-                .git, .tarball, .file => scheme: {
-                    const scheme = try std.mem.concat(allocator, u8, &.{ @tagName(self.type), "+", url.?.scheme });
-                    allocated_strings.append(scheme) catch |err| {
-                        allocator.free(scheme);
-                        return err;
-                    };
-                    break :scheme scheme;
-                },
-                else => @tagName(self.type),
+        pub const MercurialScheme = meta.MergedStructs(Scheme, struct {
+            url: []const u8,
+            ref: ?[]const u8 = null,
+            rev: ?[]const u8 = null,
+            revCount: u64 = 0,
+            // name: ?[]const u8 = null, // XXX remove, seems to have no use
+        });
+
+        pub const CurlScheme = meta.MergedStructs(Scheme, struct {
+            // type: []const u8, // XXX remove, makes no sense
+            url: []const u8,
+            // name: ?[]const u8 = null, // XXX remove, seems to have no use
+            unpack: bool = true,
+            rev: ?[]const u8 = null,
+            revCount: u64 = 0,
+        });
+
+        pub const GitArchiveScheme = meta.MergedStructs(Scheme, struct {
+            owner: []const u8,
+            repo: []const u8,
+            ref: ?[]const u8 = null,
+            rev: ?[]const u8 = null,
+            host: ?[]const u8 = null,
+            treeHash: ?[]const u8 = null,
+        });
+
+        pub fn locked(self: @This(), trust_tarballs_from_git_forges: bool) bool {
+            return switch (self) {
+                .github, .gitlab, .sourcehut => |v| v.rev != null and
+                    (trust_tarballs_from_git_forges or v.narHash != null),
+                inline else => |v| v.narHash != null or
+                    @hasField(@TypeOf(v), "rev") and v.rev != null,
             };
-            result.path = switch (self.type) {
-                .indirect => path: {
-                    var parts = std.ArrayListUnmanaged([]const u8){};
-                    defer parts.deinit(allocator);
+        }
 
-                    try parts.append(allocator, self.id.?);
-                    if (self.ref) |ref| try parts.append(allocator, ref);
-                    if (self.rev) |rev| try parts.append(allocator, rev);
+        pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
 
-                    const path = try std.mem.join(allocator, "/", parts.items);
-                    allocated_strings.append(path) catch |err| {
-                        allocator.free(path);
-                        return err;
-                    };
+            const value = try std.json.innerParse(std.json.Value, arena.allocator(), source, options);
 
-                    break :path .{ .raw = path };
-                },
-                .path => .{ .raw = self.path.? },
-                .github, .gitlab, .sourcehut => .{ .raw = path: {
-                    const path = try std.mem.join(
-                        allocator,
-                        "/",
-                        if (self.ref) |ref|
-                            &.{ self.owner.?, self.repo.?, ref }
-                        else if (self.rev) |rev|
-                            &.{ self.owner.?, self.repo.?, rev }
-                        else
-                            &.{ self.owner.?, self.repo.? },
+            return jsonParseFromValue(allocator, value, options);
+        }
+
+        pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
+            if (source != .object) return error.UnexpectedToken;
+
+            const type_str = (source.object.get("type") orelse return error.MissingField).string;
+
+            var active_options = options;
+            active_options.ignore_unknown_fields = true;
+
+            return self: inline for (std.meta.fields(@This())) |field| {
+                if (std.mem.eql(u8, field.name, type_str))
+                    break :self @unionInit(
+                        @This(),
+                        field.name,
+                        try std.json.innerParseFromValue(field.type, allocator, source, active_options),
                     );
-                    allocated_strings.append(path) catch |err| {
-                        allocator.free(path);
-                        return err;
-                    };
-                    break :path path;
-                } },
-                .git, .mercurial, .tarball, .file => url.?.path,
+            } else return error.InvalidEnumTag;
+        }
+
+        test jsonParse {
+            (try std.json.parseFromSlice(@This(), std.testing.allocator,
+                \\{
+                \\  "type": "path",
+                \\  "path": "foo/bar"
+                \\}
+            , .{})).deinit();
+            (try std.json.parseFromSlice(@This(), std.testing.allocator,
+                \\{
+                \\  "type": "git",
+                \\  "url": "git+https://example.com/foo/bar"
+                \\}
+            , .{})).deinit();
+        }
+
+        pub fn valid(self: @This()) bool {
+            return switch (self) {
+                .github, .gitlab, .sourcehut => |v| v.ref == null or v.rev == null,
+                else => true,
             };
-            result.query = query: {
-                var query_args = std.StringArrayHashMapUnmanaged([]const u8){};
-                defer query_args.deinit(allocator);
+        }
 
-                if (url) |u| if (u.query) |url_query| {
-                    const url_query_encoded = try std.fmt.allocPrint(allocator, "{query}", .{url_query});
-                    allocated_strings.append(url_query_encoded) catch |err| {
-                        allocator.free(url_query_encoded);
-                        return err;
-                    };
+        pub fn toUrl(self: @This(), arena: std.mem.Allocator) (std.mem.Allocator.Error || std.Uri.ParseError)!std.Uri {
+            var url: std.Uri = switch (self) {
+                .indirect => |input| .{
+                    .scheme = "flake",
+                    .path = path: {
+                        var parts = std.ArrayListUnmanaged([]const u8){};
+                        defer parts.deinit(arena);
 
-                    var url_query_iter = std.mem.splitScalar(u8, url_query_encoded, '&');
-                    while (url_query_iter.next()) |url_query_param| {
-                        const assign_idx = std.mem.indexOfScalar(u8, url_query_param, '=');
-                        try query_args.put(
-                            allocator,
-                            if (assign_idx) |ai| url_query_param[0..ai] else url_query_param,
-                            if (assign_idx) |ai| url_query_param[ai + 1 ..] else "",
-                        );
-                    }
-                };
+                        try parts.append(arena, input.id);
+                        if (input.ref) |ref| try parts.append(arena, ref);
+                        if (input.rev) |rev| try parts.append(arena, rev);
 
-                if (self.host) |host| try query_args.put(allocator, "host", host);
-                if (self.dir) |dir| try query_args.put(allocator, "dir", dir);
-                if (self.submodules orelse false) try query_args.put(allocator, "submodules", "1");
-
-                switch (self.type) {
-                    .indirect, .github, .gitlab, .sourcehut => {},
-                    else => {
-                        if (self.ref) |ref| try query_args.put(allocator, "ref", ref);
-                        if (self.rev) |rev| try query_args.put(allocator, "rev", rev);
+                        break :path .{ .raw = try std.mem.join(arena, "/", parts.items) };
                     },
+                    .query = try structToQuery(arena, input, fields: {
+                        var fields = std.EnumSet(std.meta.FieldEnum(@TypeOf(input))).initFull();
+                        fields.remove(.id);
+                        fields.remove(.ref);
+                        fields.remove(.rev);
+                        break :fields fields;
+                    }),
+                },
+                .path => |input| .{
+                    .scheme = @tagName(self),
+                    .path = .{ .raw = input.path },
+                    .query = try structToQuery(arena, input, fields: {
+                        var fields = std.EnumSet(std.meta.FieldEnum(@TypeOf(input))).initFull();
+                        fields.remove(.path);
+                        fields.remove(.revCount);
+                        break :fields fields;
+                    }),
+                },
+                .git => |input| try urlFromInputUrl(arena, input, "git", fields: {
+                    // XXX
+                    // const publicKeys = getPublicKeys(input.attrs);
+                    // if (publicKeys.size() == 1) {
+                    //     url.query.insert_or_assign("keytype", publicKeys.at(0).type);
+                    //     url.query.insert_or_assign("publicKey", publicKeys.at(0).key);
+                    // } else if (publicKeys.size() > 1)
+                    //     url.query.insert_or_assign("publicKeys", publicKeys_to_string(publicKeys));
+                    var fields = std.EnumSet(std.meta.FieldEnum(@TypeOf(input))).initFull();
+                    fields.remove(.revCount);
+                    fields.remove(.dirtyRev);
+                    fields.remove(.dirtyShortRev);
+                    break :fields fields;
+                }),
+                .mercurial => |input| try urlFromInputUrl(arena, input, "hg", fields: {
+                    var fields = std.EnumSet(std.meta.FieldEnum(@TypeOf(input))).initFull();
+                    fields.remove(.revCount);
+                    break :fields fields;
+                }),
+                .tarball, .file => |input| try urlFromInputUrl(arena, input, @tagName(self), fields: {
+                    var fields = std.EnumSet(std.meta.FieldEnum(@TypeOf(input))).initFull();
+                    fields.remove(.unpack);
+                    fields.remove(.rev);
+                    fields.remove(.revCount);
+                    break :fields fields;
+                }),
+                .github, .gitlab, .sourcehut => |input| .{
+                    .scheme = @tagName(self),
+                    .path = path: {
+                        var path = std.ArrayListUnmanaged(u8){};
+                        defer path.deinit(arena);
+
+                        try path.appendSlice(arena, input.owner);
+                        try path.append(arena, '/');
+                        try path.appendSlice(arena, input.repo);
+                        std.debug.assert(input.ref == null or input.rev == null);
+                        if (input.ref) |ref| {
+                            try path.append(arena, '/');
+                            try path.appendSlice(arena, ref);
+                        }
+                        if (input.rev) |rev| {
+                            try path.append(arena, '/');
+                            try path.appendSlice(arena, rev);
+                        }
+
+                        break :path .{ .raw = try path.toOwnedSlice(arena) };
+                    },
+                    .query = try structToQuery(arena, input, fields: {
+                        var fields = std.EnumSet(std.meta.FieldEnum(@TypeOf(input))).initFull();
+                        fields.remove(.owner);
+                        fields.remove(.repo);
+                        fields.remove(.ref);
+                        fields.remove(.rev);
+                        break :fields fields;
+                    }),
+                },
+            };
+
+            // An empty query causes a trailing `?` when `url` is formatted.
+            if (url.query) |query| {
+                if (query.isEmpty())
+                    url.query = null;
+            }
+
+            return url;
+        }
+
+        fn urlFromInputUrl(
+            arena: std.mem.Allocator,
+            input: anytype,
+            scheme: ?[]const u8,
+            comptime fields: std.EnumSet(std.meta.FieldEnum(@TypeOf(input))),
+        ) (std.mem.Allocator.Error || std.Uri.ParseError)!std.Uri {
+            var url = try std.Uri.parse(input.url);
+
+            if (scheme) |s| {
+                if (!std.mem.eql(u8, url.scheme, s)) {
+                    const url_scheme = try std.mem.concat(arena, u8, &.{ s, "+", url.scheme });
+                    url.scheme = url_scheme;
                 }
+            }
 
-                if (self.type == .git)
-                    if (self.shallow orelse true) try query_args.put(allocator, "shallow", "1");
+            const query = query: {
+                var query_map = try structToQueryMap(arena, input, fields: {
+                    var fields_ = fields;
+                    fields_.remove(.url);
+                    break :fields fields_;
+                });
 
-                if (locked)
-                    if (self.narHash) |narHash| try query_args.put(allocator, "narHash", narHash);
+                if (url.query) |url_query| {
+                    var url_query_iter = uri.QueryIterator.init(switch (url_query) {
+                        inline else => |v| v,
+                    });
+                    while (url_query_iter.next()) |param| {
+                        // XXX Skip if the `param.value` is the default.
+                        // Not needed when emitting `--allowed-uris`
+                        // with inputs parsed from a `flake.lock`
+                        // because Nix has already done that for us
+                        // before writing into the `flake.lock`.
+                        // Would be nice to have though because it
+                        // would make this function also canonicalize the URL,
+                        // allowing users to construct it whatever way they like.
 
-                if (query_args.count() == 0) break :query if (url) |u| u.query else null;
-
-                var query = std.ArrayListUnmanaged(u8){};
-                defer query.deinit(allocator);
-
-                {
-                    // When matching `allowed-uris`, Nix does not take into account
-                    // that a URL could have query parameters.
-                    // Instead it just checks whether any allowed URI
-                    // is a string prefix of the URL in question:
-                    // https://github.com/NixOS/nix/blob/a4f978bd9b872f0d51aff95b83054358767ef193/src/libexpr/eval.cc#L397
-                    // That also means it is impossible to use `--allowed-uris`
-                    // to allow URLs like `github:foo/bar?host=example.com`
-                    // or `https://github.com/foo/bar?rev=refs/tags/baz`
-                    // which excludes flake inputs of type `git`
-                    // with commit granularity, *unless* we emit
-                    // the _exact_ same URL including the query.
-                    // Luckily the query Nix compares against is deterministic
-                    // because it iterates over the query parameters as a sorted map:
-                    // https://github.com/NixOS/nix/blob/a4f978bd9b872f0d51aff95b83054358767ef193/src/libfetchers/fetchers.cc#L128
-                    // So that's what we need to do also.
-                    query_args.sortUnstable(struct {
-                        keys: []const []const u8,
-
-                        pub fn lessThan(ctx: @This(), a_index: usize, b_index: usize) bool {
-                            return std.mem.order(u8, ctx.keys[a_index], ctx.keys[b_index]) == .lt;
-                        }
-                    }{ .keys = query_args.keys() });
-
-                    // We cannot use a raw component and rely on it
-                    // being percent-encoded by `std.Uri.format()`
-                    // because that only percent-encodes what is necessary.
-                    // Nix percent-encodes the query more aggressively
-                    // and does not recognize Zig's minimally escaped form
-                    // when matching against its `allowed-uris` setting.
-                    // Therefore we explicitely percent-encode the set of characters Nix does.
-                    const isValidChar = struct {
-                        /// Same as `std.Uri.isQueryChar()` but without `=` and `+`.
-                        /// Unfortunately that function is not public
-                        /// so we need to repeat its implementation here.
-                        /// Because `=` must be encoded in values but is also a separator,
-                        /// we cannot simply encode the entire query at once
-                        /// and instead need to encode the values separately.
-                        fn isValidChar(c: u8) bool {
-                            return switch (c) {
-                                // same as `std.Uri.isUnreserved()`
-                                'A'...'Z',
-                                'a'...'z',
-                                '0'...'9',
-                                '-',
-                                '.',
-                                '_',
-                                '~',
-                                // same as `std.Uri.isSubLimit()` but without `=` and `+`
-                                '!',
-                                '$',
-                                '&',
-                                '\'',
-                                '(',
-                                ')',
-                                '*',
-                                ',',
-                                ';',
-                                // additions from `std.Uri.isPathChar()`
-                                '/',
-                                ':',
-                                '@',
-                                // additions from `std.Uri.isQueryChar()`
-                                '?',
-                                => true,
-                                else => false,
-                            };
-                        }
-                    }.isValidChar;
-
-                    var iter = query_args.iterator();
-                    var first = true;
-                    while (iter.next()) |entry| {
-                        if (first)
-                            first = false
-                        else
-                            try query.append(allocator, '&');
-
-                        try std.Uri.Component.percentEncode(query.writer(allocator), entry.key_ptr.*, isValidChar);
-                        try query.append(allocator, '=');
-                        try std.Uri.Component.percentEncode(query.writer(allocator), entry.value_ptr.*, isValidChar);
+                        const gop = try query_map.getOrPut(param.key);
+                        // Fields take precendence over the URL's query parameters.
+                        if (!gop.found_existing)
+                            gop.value_ptr.* = param.value;
                     }
                 }
 
-                const query_slice = try query.toOwnedSlice(allocator);
-                allocated_strings.append(query_slice) catch |err| {
-                    allocator.free(query_slice);
-                    return err;
-                };
-
-                break :query .{ .percent_encoded = query_slice };
+                break :query try mapToQuery(arena, &query_map.unmanaged);
             };
+            url.query = query;
 
-            return result;
+            return url;
         }
 
         test toUrl {
@@ -435,86 +452,330 @@ pub const FlakeMetadata = struct {
             defer arena.deinit();
             const allocator = arena.allocator();
 
-            try std.testing.expectFmt("flake:cizero/master/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1", "{}", .{try (Source{
-                .type = .indirect,
-                .id = "cizero",
-                .ref = "master",
-                .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                .dir = "nix",
-                .submodules = true,
-            }).toUrl(allocator, false)});
+            try std.testing.expectFmt(
+                "flake:cizero",
+                "{}",
+                .{try (@This(){ .indirect = .{
+                    .id = "cizero",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "flake:cizero/master/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
+                "{}",
+                .{try (@This(){ .indirect = .{
+                    .id = "cizero",
+                    .ref = "master",
+                    .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
 
-            try std.testing.expectFmt("path:/cizero?dir=nix", "{}", .{try (Source{
-                .type = .path,
-                .path = "/cizero",
-                .dir = "nix",
-            }).toUrl(allocator, false)});
+            try std.testing.expectFmt(
+                "path:foo",
+                "{}",
+                .{try (@This(){ .path = .{
+                    .path = "foo",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "path:/cizero?dir=nix&rev=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "{}",
+                .{try (@This(){
+                    .path = .{
+                        .path = "/cizero",
+                        .dir = "nix",
+                        .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                        .revCount = 1, // Make sure this is not emitted.
+                    },
+                }).toUrl(allocator)},
+            );
 
-            try std.testing.expectFmt("git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&shallow=1&submodules=1", "{}", .{try (Source{
-                .type = .git,
-                .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1",
-            }).toUrl(allocator, false)});
-            try std.testing.expectFmt("hg+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1", "{}", .{try (Source{
-                .type = .mercurial,
-                .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&submodules=1",
-            }).toUrl(allocator, false)});
-            try std.testing.expectFmt("tarball+https://example.com:42/cizero.tar.gz?dir=nix", "{}", .{try (Source{
-                .type = .tarball,
-                .url = "https://example.com:42/cizero.tar.gz?dir=nix",
-            }).toUrl(allocator, false)});
-            try std.testing.expectFmt("file+https://example.com:42/cizero.tar.gz?dir=nix", "{}", .{try (Source{
-                .type = .file,
-                .url = "https://example.com:42/cizero.tar.gz?dir=nix",
-            }).toUrl(allocator, false)});
+            try std.testing.expectFmt(
+                "git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
+                "{}",
+                .{try (@This(){ .git = .{
+                    .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "hg+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
+                "{}",
+                .{try (@This(){ .mercurial = .{
+                    .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "tarball+https://example.com:42/cizero.tar.gz?dir=nix",
+                "{}",
+                .{try (@This(){ .tarball = .{
+                    .url = "https://example.com:42/cizero.tar.gz",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "file+https://example.com:42/cizero.tar.gz?dir=nix",
+                "{}",
+                .{try (@This(){ .file = .{
+                    .url = "https://example.com:42/cizero.tar.gz",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
 
-            try std.testing.expectFmt("git+file:/cizero?shallow=1&submodules=1", "{}", .{try (Source{
-                .type = .git,
-                .url = "file:/cizero?submodules=1",
-            }).toUrl(allocator, false)});
+            try std.testing.expectFmt(
+                "git+file:/cizero?shallow=1&submodules=1",
+                "{}",
+                .{try (@This(){
+                    .git = .{
+                        .url = "file:/cizero",
+                        .shallow = true,
+                        .submodules = true,
+                        .lastModified = 0, // Make sure this is not emitted.
+                    },
+                }).toUrl(allocator)},
+            );
+            // XXX see "XXX Skip if the `param.value` is the default."
+            if (false) try std.testing.expectFmt(
+                "git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
+                "{}",
+                .{try (@This(){
+                    .git = .{
+                        .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?submodules=1",
+                        .dir = "nix",
+                        .submodules = false, // Make sure this precedes the `url`'s query parameter.
+                    },
+                }).toUrl(allocator)},
+            );
 
-            try std.testing.expectFmt("github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "{}", .{try (Source{
-                .type = .github,
-                .owner = "input-output-hk",
-                .repo = "cizero",
-                .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            }).toUrl(allocator, false)});
+            try std.testing.expectFmt(
+                "github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "{}",
+                .{try (@This(){ .github = .{
+                    .owner = "input-output-hk",
+                    .repo = "cizero",
+                    .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                } }).toUrl(allocator)},
+            );
 
-            try std.testing.expectFmt("github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com&submodules=1", "{}", .{try (Source{
-                .type = .github,
-                .owner = "input-output-hk",
-                .repo = "cizero",
-                .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                .host = "example.com",
-                .dir = "nix",
-                .submodules = true,
-            }).toUrl(allocator, false)});
-            try std.testing.expectFmt("gitlab:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com&submodules=1", "{}", .{try (Source{
-                .type = .gitlab,
-                .owner = "input-output-hk",
-                .repo = "cizero",
-                .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                .host = "example.com",
-                .dir = "nix",
-                .submodules = true,
-            }).toUrl(allocator, false)});
-            try std.testing.expectFmt("sourcehut:~input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com&submodules=1", "{}", .{try (Source{
-                .type = .sourcehut,
-                .owner = "~input-output-hk",
-                .repo = "cizero",
-                .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                .host = "example.com",
-                .dir = "nix",
-                .submodules = true,
-            }).toUrl(allocator, false)});
+            try std.testing.expectFmt(
+                "github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com",
+                "{}",
+                .{try (@This(){ .github = .{
+                    .owner = "input-output-hk",
+                    .repo = "cizero",
+                    .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    .host = "example.com",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "gitlab:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com",
+                "{}",
+                .{try (@This(){ .gitlab = .{
+                    .owner = "input-output-hk",
+                    .repo = "cizero",
+                    .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    .host = "example.com",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
+            try std.testing.expectFmt(
+                "sourcehut:~input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com",
+                "{}",
+                .{try (@This(){ .sourcehut = .{
+                    .owner = "~input-output-hk",
+                    .repo = "cizero",
+                    .rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    .host = "example.com",
+                    .dir = "nix",
+                } }).toUrl(allocator)},
+            );
+        }
+
+        fn structToQuery(
+            allocator: std.mem.Allocator,
+            strukt: anytype,
+            comptime fields: std.EnumSet(std.meta.FieldEnum(@TypeOf(strukt))),
+        ) std.mem.Allocator.Error!std.Uri.Component {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+
+            var map = try structToQueryMap(arena.allocator(), strukt, fields);
+            return mapToQuery(allocator, &map.unmanaged);
+        }
+
+        fn structToQueryMap(
+            arena: std.mem.Allocator,
+            strukt: anytype,
+            comptime fields: std.EnumSet(std.meta.FieldEnum(@TypeOf(strukt))),
+        ) std.mem.Allocator.Error!std.StringArrayHashMap([]const u8) {
+            var map = std.StringArrayHashMap([]const u8).init(arena);
+
+            comptime var fields_ = fields;
+            comptime if (@hasField(@TypeOf(strukt), "lastModified")) fields_.remove(.lastModified);
+
+            comptime var fields_iter = fields_.iterator();
+            inline while (comptime fields_iter.next()) |field| {
+                const value = @field(strukt, @tagName(field));
+
+                if (std.meta.fieldInfo(@TypeOf(strukt), field).default_value) |default_value|
+                    if (isDefaultFlakeUrlQueryParam(value, default_value)) comptime continue;
+
+                if (try stringifyFlakeUrlQueryParam(arena, value)) |v|
+                    try map.put(@tagName(field), v);
+            }
+
+            return map;
+        }
+
+        fn isDefaultFlakeUrlQueryParam(value: anytype, default: ?*const anyopaque) bool {
+            return eqlFlakeUrlQueryParam(
+                value,
+                @as(
+                    *const @TypeOf(value),
+                    @alignCast(@ptrCast(default)),
+                ).*,
+            );
+        }
+
+        fn eqlFlakeUrlQueryParam(a: anytype, b: @TypeOf(a)) bool {
+            const A = @TypeOf(a);
+            const a_child, const b_child = switch (@typeInfo(A)) {
+                .Optional => optional: {
+                    if (a == null and b == null) return true;
+                    if ((a == null) != (b == null)) return false;
+                    break :optional .{ a.?, b.? };
+                },
+                else => .{ a, b },
+            };
+            return switch (@TypeOf(a_child)) {
+                []const u8 => std.mem.eql(u8, a_child, b_child),
+                bool => a_child == b_child,
+                u64, i64 => a_child == b_child,
+                else => @compileError("unsupported type \"" ++ @typeName(A) ++ "\" for flake URL query parameters"),
+            };
+        }
+
+        fn stringifyFlakeUrlQueryParam(allocator: std.mem.Allocator, param: anytype) std.mem.Allocator.Error!?[]const u8 {
+            const Param = @TypeOf(param);
+            const param_child = switch (@typeInfo(Param)) {
+                .Optional => if (param) |p| p else return null,
+                else => param,
+            };
+            return switch (@TypeOf(param_child)) {
+                []const u8 => param_child,
+                bool => if (param_child) "1" else "0",
+                u64, i64 => try std.fmt.allocPrint(allocator, "{d}", .{param_child}),
+                else => @compileError("unsupported type \"" ++ @typeName(Param) ++ "\" for flake URL query parameters"),
+            };
+        }
+
+        fn mapToQuery(
+            allocator: std.mem.Allocator,
+            /// Will be sorted after this function returns without error.
+            map: *std.StringArrayHashMapUnmanaged([]const u8),
+        ) std.mem.Allocator.Error!std.Uri.Component {
+            if (map.count() == 0) return std.Uri.Component.empty;
+
+            var query = std.ArrayListUnmanaged(u8){};
+            defer query.deinit(allocator);
+
+            {
+                // When matching `allowed-uris`, Nix does not take into account
+                // that a URL could have query parameters.
+                // Instead it just checks whether any allowed URI
+                // is a string prefix of the URL in question:
+                // https://github.com/NixOS/nix/blob/a4f978bd9b872f0d51aff95b83054358767ef193/src/libexpr/eval.cc#L397
+                // That also means it is impossible to use `--allowed-uris`
+                // to allow URLs like `github:foo/bar?host=example.com`
+                // or `https://github.com/foo/bar?rev=refs/tags/baz`
+                // which excludes flake inputs of type `git`
+                // with commit granularity, *unless* we emit
+                // the _exact_ same URL including the query.
+                // Luckily the query Nix compares against is deterministic
+                // because it iterates over the query parameters as a sorted map:
+                // https://github.com/NixOS/nix/blob/a4f978bd9b872f0d51aff95b83054358767ef193/src/libfetchers/fetchers.cc#L128
+                // So that's what we need to do also.
+                map.sortUnstable(struct {
+                    keys: []const []const u8,
+
+                    pub fn lessThan(ctx: @This(), a_index: usize, b_index: usize) bool {
+                        return std.mem.order(u8, ctx.keys[a_index], ctx.keys[b_index]) == .lt;
+                    }
+                }{ .keys = map.keys() });
+
+                // We cannot use a raw component and rely on it
+                // being percent-encoded by `std.Uri.format()`
+                // because that only percent-encodes what is necessary.
+                // Nix percent-encodes the query more aggressively
+                // and does not recognize Zig's minimally escaped form
+                // when matching against its `allowed-uris` setting.
+                // Therefore we explicitely percent-encode the set of characters Nix does.
+                const isValidChar = struct {
+                    /// Same as `std.Uri.isQueryChar()` but without `=` and `+`.
+                    /// Unfortunately that function is not public
+                    /// so we need to repeat its implementation here.
+                    /// Because `=` must be encoded in values but is also a separator,
+                    /// we cannot simply encode the entire query at once
+                    /// and instead need to encode the values separately.
+                    fn isValidChar(c: u8) bool {
+                        return switch (c) {
+                            // same as `std.Uri.isUnreserved()`
+                            'A'...'Z',
+                            'a'...'z',
+                            '0'...'9',
+                            '-',
+                            '.',
+                            '_',
+                            '~',
+                            // same as `std.Uri.isSubLimit()` but without `=` and `+`
+                            '!',
+                            '$',
+                            '&',
+                            '\'',
+                            '(',
+                            ')',
+                            '*',
+                            ',',
+                            ';',
+                            // additions from `std.Uri.isPathChar()`
+                            '/',
+                            ':',
+                            '@',
+                            // additions from `std.Uri.isQueryChar()`
+                            '?',
+                            => true,
+                            else => false,
+                        };
+                    }
+                }.isValidChar;
+
+                var iter = map.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (first)
+                        first = false
+                    else
+                        try query.append(allocator, '&');
+
+                    try std.Uri.Component.percentEncode(query.writer(allocator), entry.key_ptr.*, isValidChar);
+                    if (entry.value_ptr.len != 0) {
+                        try query.append(allocator, '=');
+                        try std.Uri.Component.percentEncode(query.writer(allocator), entry.value_ptr.*, isValidChar);
+                    }
+                }
+            }
+
+            return .{ .percent_encoded = try query.toOwnedSlice(allocator) };
         }
 
         /// Writes the URL-like form suitable to be passed to `--allowed-uris`,
-        /// possibly multiple times, separated by a space character,
-        /// in order to pass Nix' `allowed-uris` matching in all possible cases.
+        /// possibly multiple variants, separated by a space character,
+        /// in order to pass Nix' primitive `allowed-uris` matching in all possible cases.
         pub fn writeAllowedUri(self: @This(), allocator: std.mem.Allocator, writer: anytype) !void {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
-            const arena_allocator = arena.allocator();
 
             const write_to_stream_options = .{
                 .scheme = true,
@@ -524,46 +785,51 @@ pub const FlakeMetadata = struct {
                 .query = true,
             };
 
-            const url = try self.toUrl(arena_allocator, false);
+            {
+                const url = try self.toUrl(arena.allocator());
+                try url.writeToStream(write_to_stream_options, writer);
+            }
 
-            try url.writeToStream(write_to_stream_options, writer);
+            switch (self) {
+                inline else => |v, tag| if (v.narHash != null) {
+                    // We don't need the previously allocated stuff.
+                    // Free it to so we don't allocate more than necessary.
+                    _ = arena.reset(.retain_capacity);
 
-            // Up until Nix 2.20, shorthands are translated
-            // into their target URL and that is checked against,
-            // so we need to allow the target URL as well.
-            // This is fixed in Nix 2.21.
-            if (switch (self.type) {
-                .github => std.Uri{
-                    .scheme = "https",
-                    .host = .{ .percent_encoded = self.host orelse "github.com" },
-                    .path = .{ .percent_encoded = try std.mem.concat(arena_allocator, u8, &.{
-                        "/",
-                        self.owner.?,
-                        "/",
-                        self.repo.?,
-                        "/",
-                        "archive",
-                        "/",
-                        self.ref orelse self.rev.?,
-                        ".tar.gz",
-                    }) },
+                    var input = v;
+                    input.narHash = null;
+
+                    try writer.writeByte(' ');
+
+                    const url = try @unionInit(@This(), @tagName(tag), input).toUrl(arena.allocator());
+                    try url.writeToStream(write_to_stream_options, writer);
                 },
-                // TODO gitlab
-                // TODO sourcehut
-                else => null,
-            }) |target_url| {
-                try writer.writeByte(' ');
-                try target_url.writeToStream(write_to_stream_options, writer);
             }
+        }
 
-            // Some types include the `narHash` in the query.
-            // For example, GitHub inputs do since Nix 2.21:
-            // https://github.com/NixOS/nix/commit/841fd78baac507b1e97921afa3c2ebaeb6c65bfd#diff-be2f63dc22d73bd86ee70820979ee54ff2bb5cef76e3bbb53a673fddfd2a1b5cR146-R147
-            if (self.narHash) |_| {
-                try writer.writeByte(' ');
-                const url_locked = try self.toUrl(arena_allocator, true);
-                try url_locked.writeToStream(write_to_stream_options, writer);
-            }
+        test writeAllowedUri {
+            const This = @This();
+
+            const expectAllowedUris = struct {
+                pub fn expectAllowedUris(expected: []const u8, input: This) !void {
+                    var actual = std.ArrayList(u8).init(std.testing.allocator);
+                    defer actual.deinit();
+
+                    try input.writeAllowedUri(std.testing.allocator, actual.writer());
+
+                    try std.testing.expectEqualStrings(expected, actual.items);
+                }
+            }.expectAllowedUris;
+
+            try expectAllowedUris(
+                "path:foo",
+                @This(){ .path = .{ .path = "foo" } },
+            );
+
+            try expectAllowedUris(
+                "path:foo?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D path:foo",
+                @This(){ .path = .{ .path = "foo", .narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" } },
+            );
         }
     };
 
@@ -581,8 +847,8 @@ pub const FlakeMetadata = struct {
 
             pub const Full = struct {
                 inputs: std.json.ArrayHashMap([]const []const u8),
-                locked: Source,
-                original: Source,
+                locked: Input,
+                original: Input,
             };
 
             pub const Leaf = meta.SubStruct(Full, &.{ .locked, .original });
@@ -591,10 +857,11 @@ pub const FlakeMetadata = struct {
 
             pub const NonFlake = struct {
                 flake: bool = false,
-                locked: Source,
-                original: Source,
+                locked: Input,
+                original: Input,
             };
 
+            /// Assumes `trust-tarballs-from-git-forges = true` for checking whether inputs are locked for validation.
             pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
                 if (source != .object) return error.UnexpectedToken;
 
@@ -613,12 +880,12 @@ pub const FlakeMetadata = struct {
 
                     break :inputs std.json.ArrayHashMap([]const []const u8){ .map = map };
                 } else null;
-                const locked = if (source.object.get("locked")) |locked| try std.json.parseFromValueLeaky(Source, allocator, locked, options) else null;
+                const locked = if (source.object.get("locked")) |locked| try std.json.parseFromValueLeaky(Input, allocator, locked, options) else null;
                 if (locked) |l| {
-                    if (!l.immutable()) return error.MissingField;
+                    if (!l.locked(true)) return error.MissingField;
                     std.debug.assert(l.valid());
                 }
-                const original = if (source.object.get("original")) |original| try std.json.parseFromValueLeaky(Source, allocator, original, options) else null;
+                const original = if (source.object.get("original")) |original| try std.json.parseFromValueLeaky(Input, allocator, original, options) else null;
                 if (original) |o| std.debug.assert(o.valid());
 
                 return if (inputs != null and locked != null and original != null) .{ .full = .{
