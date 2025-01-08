@@ -34,7 +34,7 @@ pub fn fmtJoin(sep: []const u8, strs: []const []const u8) std.fmt.Formatter(form
     return .{ .data = .{ .sep = sep, .strs = strs } };
 }
 
-pub fn formatSourceLocation(src: std.builtin.SourceLocation, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+fn formatSourceLocation(src: std.builtin.SourceLocation, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
     try std.fmt.format(
         writer,
         "{s}() in {s}:{d}:{d}",
