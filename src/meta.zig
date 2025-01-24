@@ -593,3 +593,38 @@ test Closure {
         try std.testing.expectEqual(@as(usize, i), count);
     }
 }
+
+/// Intended to make it easier to create interface functions.
+/// Reduces boilerplate if you want one for each kind of backing type.
+/// Works for both runtime and comptime interfaces.
+/// Fails compilation if the interface implementation type
+/// is not compatible with the caller's chosen kind of backing type.
+///
+/// ```zig
+/// pub inline fn interface(self: anytype, comptime iface: IfaceCtx) Interface(iface.Type(@This())) {
+///     return .{ .impl = iface.context(self) };
+/// }
+/// ```
+pub const IfaceCtx = enum {
+    ptr,
+    const_ptr,
+    copy,
+
+    pub fn Type(self: @This(), T: type) type {
+        return switch (self) {
+            .ptr => *T,
+            .const_ptr => *const T,
+            .copy => T,
+        };
+    }
+
+    pub inline fn context(
+        comptime self: @This(),
+        ctx: anytype,
+    ) self.Type(ChildOrelseSelf(@TypeOf(ctx))) {
+        return switch (self) {
+            .ptr, .const_ptr => ctx,
+            .copy => if (@typeInfo(@TypeOf(ctx)) == .Pointer) ctx.* else ctx,
+        };
+    }
+};
