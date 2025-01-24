@@ -593,3 +593,27 @@ test Closure {
         try std.testing.expectEqual(@as(usize, i), count);
     }
 }
+
+pub const IfaceCtx = enum {
+    ptr,
+    const_ptr,
+    copy,
+
+    pub fn Type(self: @This(), T: type) type {
+        return switch (self) {
+            .ptr => *T,
+            .const_ptr => *const T,
+            .copy => T,
+        };
+    }
+
+    pub inline fn context(
+        comptime self: @This(),
+        ctx: anytype,
+    ) self.Type(ChildOrelseSelf(@TypeOf(ctx))) {
+        return switch (self) {
+            .ptr, .const_ptr => ctx,
+            .copy => if (@typeInfo(@TypeOf(ctx)) == .Pointer) ctx.* else ctx,
+        };
+    }
+};
