@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = @import("json.zig");
 
 fn formatOneline(str: []const u8, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
     for (str) |char|
@@ -44,4 +45,25 @@ fn formatSourceLocation(src: std.builtin.SourceLocation, comptime _: []const u8,
 
 pub fn fmtSourceLocation(src: std.builtin.SourceLocation) std.fmt.Formatter(formatSourceLocation) {
     return .{ .data = src };
+}
+
+/// XXX Only works on `data` that has a `format()` method.
+pub fn fmtEscapeJson(data: anytype, options: std.json.StringifyOptions) struct {
+    data_: @TypeOf(data),
+    options: std.json.StringifyOptions,
+
+    pub fn format(
+        formatter: @This(),
+        comptime fmt: []const u8,
+        format_options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        try formatter.data_.format(
+            fmt,
+            format_options,
+            json.encodeWriter(writer, formatter.options).writer(),
+        );
+    }
+} {
+    return .{ .data_ = data, .options = options };
 }
