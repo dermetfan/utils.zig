@@ -502,6 +502,36 @@ test FnErrorUnionPayload {
     try std.testing.expectEqual(void, FnErrorUnionPayload(fn () error{Foo}!void));
 }
 
+pub fn LikeReceiver(
+    comptime Object: type,
+    comptime method: std.meta.DeclEnum(ChildOrelseSelf(Object)),
+    comptime T: type,
+) type {
+    const Method = @TypeOf(@field(ChildOrelseSelf(Object), @tagName(method)));
+    const Receiver = @typeInfo(Method).Fn.params[0].type.?;
+    return switch (@typeInfo(Receiver)) {
+        .Pointer => |pointer| t_pointer: {
+            var t_pointer = pointer;
+            t_pointer.child = T;
+            t_pointer.alignment = @alignOf(T);
+            break :t_pointer @Type(.{ .Pointer = t_pointer });
+        },
+        else => T,
+    };
+}
+
+test LikeReceiver {
+    const Foo = struct {
+        pub fn foo(_: @This()) void {}
+        pub fn fooPtr(_: *@This()) void {}
+        pub fn fooConstPtr(_: *const @This()) void {}
+    };
+
+    try std.testing.expectEqual(u0, LikeReceiver(Foo, .foo, u0));
+    try std.testing.expectEqual(*u0, LikeReceiver(Foo, .fooPtr, u0));
+    try std.testing.expectEqual(*const u0, LikeReceiver(Foo, .fooConstPtr, u0));
+}
+
 pub fn DropUfcsParam(comptime T: type) type {
     var fn_info = @typeInfo(T).Fn;
     fn_info.params = fn_info.params[1..];
