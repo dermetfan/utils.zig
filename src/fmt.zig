@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = @import("json.zig");
 
 fn formatOneline(str: []const u8, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
     for (str) |char|
@@ -44,4 +45,30 @@ fn formatSourceLocation(src: std.builtin.SourceLocation, comptime _: []const u8,
 
 pub fn fmtSourceLocation(src: std.builtin.SourceLocation) std.fmt.Formatter(formatSourceLocation) {
     return .{ .data = src };
+}
+
+/// Runs `std.fmt.formatType()` through a `json.EncodeWriter`.
+/// Not to be confused with the result of `std.json.stringify()` —
+/// this results in the input's `format()` function or its default format,
+/// but JSON-encoded (or as one might say, JSON-escaped).
+pub fn fmtJsonEncode(data: anytype, options: std.json.StringifyOptions) struct {
+    data: @TypeOf(data),
+    options: std.json.StringifyOptions,
+
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        format_options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        try std.fmt.formatType(
+            self.data,
+            fmt,
+            format_options,
+            json.encodeWriter(writer, self.options).writer(),
+            std.options.fmt_max_depth,
+        );
+    }
+} {
+    return .{ .data = data, .options = options };
 }
