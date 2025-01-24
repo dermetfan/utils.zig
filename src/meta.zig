@@ -106,6 +106,10 @@ pub fn OptionalChild(comptime T: type) ?type {
     };
 }
 
+pub fn ChildOrelseSelf(comptime T: type) type {
+    return OptionalChild(T) orelse T;
+}
+
 pub fn fieldTypes(comptime T: type) []const type {
     comptime var types: []const type = &.{};
     inline for (std.meta.fields(T)) |field|
