@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const Build = std.Build;
 
 pub const Options = struct {
@@ -6,6 +7,16 @@ pub const Options = struct {
     optimize: std.builtin.OptimizeMode,
 
     zqlite: bool,
+
+    pub fn common(self: @This()) struct {
+        target: Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    } {
+        return .{
+            .target = self.target,
+            .optimize = self.optimize,
+        };
+    }
 };
 
 pub fn build(b: *Build) !void {
@@ -51,15 +62,10 @@ pub fn build(b: *Build) !void {
 }
 
 fn addDependencyImports(b: *Build, module: *Build.Module, options: Options) void {
-    const common_options = .{
-        .target = options.target,
-        .optimize = options.optimize,
-    };
-
-    module.addImport("trait", b.dependency("trait", common_options).module("zigtrait"));
+    module.addImport("trait", b.dependency("trait", options.common()).module("zigtrait"));
 
     if (options.zqlite) {
-        module.addImport("zqlite", (b.lazyDependency("zqlite", common_options) orelse return).module("zqlite"));
+        module.addImport("zqlite", (b.lazyDependency("zqlite", options.common()) orelse return).module("zqlite"));
     }
 }
 
