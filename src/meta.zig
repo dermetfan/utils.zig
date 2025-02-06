@@ -295,22 +295,21 @@ test MergedStructs {
     );
 }
 
-pub fn SubStruct(comptime T: type, comptime fields: []const std.meta.FieldEnum(T)) type {
+pub fn SubStruct(comptime T: type, comptime fields: std.enums.EnumSet(std.meta.FieldEnum(T))) type {
     var info = @typeInfo(T).Struct;
     info.decls = &.{};
     info.fields = &.{};
 
-    for (fields) |field_name|
-        info.fields = info.fields ++ .{std.meta.fieldInfo(T, field_name)};
+    var fields_iter = fields.iterator();
+    while (fields_iter.next()) |field|
+        info.fields = info.fields ++ .{std.meta.fieldInfo(T, field)};
 
     return @Type(.{ .Struct = info });
 }
 
 test SubStruct {
-    const Sub = SubStruct(
-        struct { a: u1, b: u2, c: u3 },
-        &.{ .a, .c },
-    );
+    const T = struct { a: u1, b: u2, c: u3 };
+    const Sub = SubStruct(T, std.enums.EnumSet(std.meta.FieldEnum(T)).initMany(&.{ .a, .c }));
 
     const sub_field_names = std.meta.fieldNames(Sub);
     try std.testing.expectEqual(2, sub_field_names.len);

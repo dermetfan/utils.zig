@@ -851,9 +851,9 @@ pub const FlakeMetadata = struct {
                 original: Input,
             };
 
-            pub const Leaf = meta.SubStruct(Full, &.{ .locked, .original });
+            pub const Leaf = meta.SubStruct(Full, std.enums.EnumSet(std.meta.FieldEnum(Full)).initMany(&.{ .locked, .original }));
 
-            pub const Root = meta.SubStruct(Full, &.{.inputs});
+            pub const Root = meta.SubStruct(Full, std.enums.EnumSet(std.meta.FieldEnum(Full)).initMany(&.{.inputs}));
 
             pub const NonFlake = struct {
                 flake: bool = false,
