@@ -121,7 +121,7 @@ test fieldTypes {
 }
 
 pub fn FieldsTuple(Struct: type) type {
-    if (trait.isTuple(Struct)) return Struct;
+    if (@typeInfo(Struct).Struct.is_tuple) return Struct;
     return std.meta.Tuple(fieldTypes(Struct));
 }
 
