@@ -48,8 +48,9 @@ pub fn fmtSourceLocation(src: std.builtin.SourceLocation) std.fmt.Formatter(form
 }
 
 /// Runs `std.fmt.formatType()` through a `json.EncodeWriter`.
-/// Not to be confused with the result of `std.json.stringify()` —
-/// this results in the input's `format()` function or its default format,
+/// Not to be confused with the result of `std.json.stringify()`,
+/// use `fmtStringifyJson()` and its friends for that.
+/// This results in the input's `format()` function or its default format,
 /// but JSON-encoded (or as one might say, JSON-escaped).
 pub fn fmtJsonEncode(data: anytype, options: std.json.StringifyOptions) struct {
     data: @TypeOf(data),
@@ -71,4 +72,64 @@ pub fn fmtJsonEncode(data: anytype, options: std.json.StringifyOptions) struct {
     }
 } {
     return .{ .data = data, .options = options };
+}
+
+pub fn fmtJsonStringify(data: anytype, options: std.json.StringifyOptions) struct {
+    data: @TypeOf(data),
+    options: std.json.StringifyOptions,
+
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        std.debug.assert(fmt.len == 0);
+        try std.json.stringify(self.data, self.options, writer);
+    }
+} {
+    return .{ .data = data, .options = options };
+}
+
+pub fn fmtJsonStringifyMaxDepth(
+    data: anytype,
+    options: std.json.StringifyOptions,
+    comptime max_depth: ?usize,
+) struct {
+    data: @TypeOf(data),
+    options: std.json.StringifyOptions,
+
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        std.debug.assert(fmt.len == 0);
+        try std.json.stringifyMaxDepth(self.data, self.options, writer, max_depth);
+    }
+} {
+    return .{ .data = data, .options = options };
+}
+
+pub fn fmtJsonStringifyArbitraryDepth(
+    allocator: std.mem.Allocator,
+    data: anytype,
+    options: std.json.StringifyOptions,
+) struct {
+    data: @TypeOf(data),
+    options: std.json.StringifyOptions,
+    allocator: std.mem.Allocator,
+
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        std.debug.assert(fmt.len == 0);
+        try std.json.stringifyArbitraryDepth(allocator, self.data, self.options, writer);
+    }
+} {
+    return .{ .data = data, .options = options, .allocator = allocator };
 }
