@@ -1279,7 +1279,14 @@ pub fn impl(
             return std.SemanticVersion.parse(result.stdout);
         }
 
-        pub fn config(allocator: std.mem.Allocator, diagnostics: ?*ChildProcessDiagnostics) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
+        pub const ConfigDiagnostics = union {
+            CouldNotReadNixConfig: ChildProcessDiagnostics,
+        };
+
+        pub fn config(
+            allocator: std.mem.Allocator,
+            diagnostics: ?*ConfigDiagnostics,
+        ) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
             const result = try std.process.Child.run(.{
                 .allocator = allocator,
                 .max_output_bytes = 100 * mem.b_per_kib,
@@ -1288,7 +1295,7 @@ pub fn impl(
             defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
-                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = .{ .CouldNotReadNixConfig = ChildProcessDiagnostics.fromRunResult(result) };
                 return error.CouldNotReadNixConfig;
             }
             allocator.free(result.stderr);
@@ -1306,11 +1313,15 @@ pub fn impl(
             (try config(std.testing.allocator, null)).deinit();
         }
 
+        pub const FlakeMetadataDiagnostics = union {
+            FlakeMetadataFailed: ChildProcessDiagnostics,
+        };
+
         pub fn flakeMetadata(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakeMetadataOptions,
-            diagnostics: ?*ChildProcessDiagnostics,
+            diagnostics: ?*FlakeMetadataDiagnostics,
         ) !std.json.Parsed(FlakeMetadata) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
@@ -1336,7 +1347,7 @@ pub fn impl(
 
             if (result.term != .Exited or result.term.Exited != 0) {
                 log_scoped.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
-                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = .{ .FlakeMetadataFailed = ChildProcessDiagnostics.fromRunResult(result) };
                 return error.FlakeMetadataFailed; // TODO return more specific error
             }
             defer allocator.free(result.stderr);
@@ -1349,12 +1360,16 @@ pub fn impl(
             return std.json.parseFromValue(FlakeMetadata, allocator, json.value, json_options);
         }
 
+        pub const FlakeMetadataLocksDiagnostics = union {
+            FlakePrefetchFailed: ChildProcessDiagnostics,
+        };
+
         /// This is faster than `flakeMetadata()` if you only need the contents of `flake.lock`.
         pub fn flakeMetadataLocks(
             allocator: std.mem.Allocator,
             flake: []const u8,
             opts: FlakePrefetchOptions,
-            diagnostics: ?*ChildProcessDiagnostics,
+            diagnostics: ?*FlakeMetadataLocksDiagnostics,
         ) !?std.json.Parsed(FlakeMetadata.Locks) {
             const argv = try std.mem.concat(allocator, []const u8, &.{
                 &.{
@@ -1382,7 +1397,7 @@ pub fn impl(
 
             if (result.term != .Exited or result.term.Exited != 0) {
                 log_scoped.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
-                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = .{ .FlakePrefetchFailed = ChildProcessDiagnostics.fromRunResult(result) };
                 return error.FlakePrefetchFailed; // TODO return more specific error
             }
             defer allocator.free(result.stderr);
@@ -1423,7 +1438,7 @@ pub fn impl(
             allocator: std.mem.Allocator,
             flake_ref: []const u8,
             opts: FlakeMetadataOptions,
-            diagnostics: ?*ChildProcessDiagnostics,
+            diagnostics: ?*FlakeMetadataDiagnostics,
         ) ![]const u8 {
             const flake = std.mem.sliceTo(flake_ref, '#');
 
@@ -1449,11 +1464,17 @@ pub fn impl(
 
             {
                 const locked = locked: {
-                    var diagnostics: ChildProcessDiagnostics = undefined;
-                    errdefer {
-                        defer diagnostics.deinit(std.testing.allocator);
-                        std.log.err("term: {}\nstderr: {s}", .{ diagnostics.term, diagnostics.stderr });
-                    }
+                    var diagnostics: FlakeMetadataDiagnostics = undefined;
+                    errdefer |err| switch (err) {
+                        error.FlakeMetadataFailed => {
+                            defer diagnostics.FlakeMetadataFailed.deinit(std.testing.allocator);
+                            std.log.err("term: {}\nstderr: {s}", .{
+                                diagnostics.FlakeMetadataFailed.term,
+                                diagnostics.FlakeMetadataFailed.stderr,
+                            });
+                        },
+                        else => {},
+                    };
                     break :locked try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
                 };
                 defer std.testing.allocator.free(locked);
@@ -1463,11 +1484,17 @@ pub fn impl(
 
             {
                 const locked = locked: {
-                    var diagnostics: ChildProcessDiagnostics = undefined;
-                    errdefer {
-                        defer diagnostics.deinit(std.testing.allocator);
-                        std.log.err("term: {}\nstderr: {s}", .{ diagnostics.term, diagnostics.stderr });
-                    }
+                    var diagnostics: FlakeMetadataDiagnostics = undefined;
+                    errdefer |err| switch (err) {
+                        error.FlakeMetadataFailed => {
+                            defer diagnostics.FlakeMetadataFailed.deinit(std.testing.allocator);
+                            std.log.err("term: {}\nstderr: {s}", .{
+                                diagnostics.FlakeMetadataFailed.term,
+                                diagnostics.FlakeMetadataFailed.stderr,
+                            });
+                        },
+                        else => {},
+                    };
                     break :locked try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
                 };
                 defer std.testing.allocator.free(locked);
@@ -1476,10 +1503,14 @@ pub fn impl(
             }
         }
 
+        pub const StoreInfoDiagnostics = union {
+            CouldNotPingNixStore: ChildProcessDiagnostics,
+        };
+
         pub fn storeInfo(
             allocator: std.mem.Allocator,
             store: []const u8,
-            diagnostics: ?*ChildProcessDiagnostics,
+            diagnostics: ?*StoreInfoDiagnostics,
         ) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotPingNixStore})!std.json.Parsed(StoreInfo) {
             const result = try run_fn(.{
                 .allocator = allocator,
@@ -1488,7 +1519,7 @@ pub fn impl(
             defer allocator.free(result.stdout);
 
             if (result.term != .Exited or result.term.Exited != 0) {
-                if (diagnostics) |d| d.* = ChildProcessDiagnostics.fromRunResult(result);
+                if (diagnostics) |d| d.* = .{ .CouldNotPingNixStore = ChildProcessDiagnostics.fromRunResult(result) };
                 return error.CouldNotPingNixStore;
             }
             allocator.free(result.stderr);
