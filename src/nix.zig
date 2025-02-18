@@ -1,3 +1,4 @@
+const root = @import("root");
 const std = @import("std");
 
 const mem = @import("mem.zig");
@@ -12,6 +13,33 @@ pub const log = @import("nix/log.zig");
 
 /// The Nix daemon wire protocol format.
 pub const wire = @import("nix/wire.zig");
+
+pub const Options = struct {
+    log_scope: @TypeOf(.EnumLiteral) = .@"utils/nix",
+    runFn: @TypeOf(defaultRunFn) = defaultRunFn,
+
+    const RunArgs = @typeInfo(@TypeOf(std.process.Child.run)).Fn.params[0].type.?;
+
+    /// Only has the fields that are actually needed
+    /// so that an implementation that supports only these can be supplied.
+    pub const RunFnArgs = meta.SubStruct(RunArgs, std.enums.EnumSet(std.meta.FieldEnum(RunArgs)).initMany(&.{
+        .allocator,
+        .max_output_bytes,
+        .argv,
+    }));
+
+    fn defaultRunFn(args: RunFnArgs) std.process.Child.RunError!std.process.Child.RunResult {
+        return std.process.Child.run(.{
+            .allocator = args.allocator,
+            .max_output_bytes = args.max_output_bytes,
+            .argv = args.argv,
+        });
+    }
+};
+
+pub const options: Options = if (@hasDecl(root, "utils_nix_options")) root.utils_nix_options else .{};
+
+const log_scoped = std.log.scoped(options.log_scope);
 
 fn embedExpr(comptime name: []const u8) [:0]const u8 {
     return @embedFile("nix/" ++ name ++ ".nix");
@@ -140,6 +168,379 @@ test recurseForDerivations {
     try std.testing.expectEqualStrings("", result.stderr);
 }
 
+pub const FailedBuilds = struct {
+    /// derivations that failed to build
+    builds: []const []const u8,
+    /// derivations that have dependencies that failed
+    dependents: []const []const u8,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        for (self.builds) |drv| allocator.free(drv);
+        allocator.free(self.builds);
+
+        for (self.dependents) |drv| allocator.free(drv);
+        allocator.free(self.dependents);
+
+        self.* = undefined;
+    }
+
+    /// Duplicates the slices taken from `stderr` so you can free it after the call.
+    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr_reader: anytype) !@This() {
+        var builds = std.StringArrayHashMapUnmanaged(void){};
+        defer builds.deinit(allocator);
+
+        var dependents = std.StringArrayHashMapUnmanaged(void){};
+        defer dependents.deinit(allocator);
+
+        var line = std.ArrayListUnmanaged(u8){};
+        defer line.deinit(allocator);
+        const line_writer = line.writer(allocator);
+
+        line: while (true) : (line.clearRetainingCapacity()) {
+            stderr_reader.streamUntilDelimiter(line_writer, '\n', null) catch |err| switch (err) {
+                error.EndOfStream => break :line,
+                else => |e| return e,
+            };
+
+            const readExpected = struct {
+                fn call(reader: anytype, comptime slice: []const u8) !bool {
+                    var buf: [slice.len]u8 = undefined;
+                    const len = reader.readAll(&buf) catch |err|
+                        return if (err == error.EndOfStream) false else err;
+                    return std.mem.eql(u8, buf[0..len], slice);
+                }
+            }.call;
+
+            builds: {
+                var line_stream = std.io.fixedBufferStream(line.items);
+                const line_reader = line_stream.reader();
+
+                var drv_list = std.ArrayListUnmanaged(u8){};
+                errdefer drv_list.deinit(allocator);
+
+                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
+                if (!try readExpected(line_reader, "rror: builder for '")) break :builds;
+                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :builds;
+                if (!try readExpected(line_reader, " failed")) break :builds;
+
+                const drv = try drv_list.toOwnedSlice(allocator);
+                errdefer allocator.free(drv);
+
+                try builds.put(allocator, drv, {});
+            }
+
+            foreign_builds: {
+                var line_stream = std.io.fixedBufferStream(line.items);
+                const line_reader = line_stream.reader();
+
+                var drv_list = std.ArrayListUnmanaged(u8){};
+                errdefer drv_list.deinit(allocator);
+
+                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
+                if (!try readExpected(line_reader, "rror: a '")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, " is required to build '")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, ", but I am a '")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
+                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
+                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
+                if (line_reader.readByte() != error.EndOfStream) break :foreign_builds;
+
+                const drv = try drv_list.toOwnedSlice(allocator);
+                errdefer allocator.free(drv);
+
+                try builds.put(allocator, drv, {});
+            }
+
+            dependents: {
+                var line_stream = std.io.fixedBufferStream(line.items);
+                const line_reader = line_stream.reader();
+
+                var drv_list = std.ArrayListUnmanaged(u8){};
+                errdefer drv_list.deinit(allocator);
+
+                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
+                if (!try readExpected(line_reader, "rror: ")) break :dependents;
+                line_reader.streamUntilDelimiter(std.io.null_writer, ' ', null) catch break :dependents;
+                if (!try readExpected(line_reader, "dependencies of derivation '")) break :dependents;
+                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :dependents;
+                if (!try readExpected(line_reader, " failed to build")) break :dependents;
+
+                const drv = try drv_list.toOwnedSlice(allocator);
+                errdefer allocator.free(drv);
+
+                try dependents.put(allocator, drv, {});
+            }
+        }
+
+        const builds_slice = try allocator.dupe([]const u8, builds.keys());
+        errdefer allocator.free(builds_slice);
+
+        const dependents_slice = try allocator.dupe([]const u8, dependents.keys());
+        errdefer allocator.free(dependents_slice);
+
+        return .{
+            .builds = builds_slice,
+            .dependents = dependents_slice,
+        };
+    }
+};
+
+pub const ChildProcessDiagnostics = struct {
+    term: std.process.Child.Term,
+    stderr: []u8,
+
+    fn fromRunResult(result: std.process.Child.RunResult) @This() {
+        return .{
+            .term = result.term,
+            .stderr = result.stderr,
+        };
+    }
+
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.stderr);
+    }
+};
+
+pub const VersionError =
+    std.process.Child.RunError ||
+    error{ InvalidVersion, Overflow, UnknownNixVersion };
+
+pub fn version(allocator: std.mem.Allocator) VersionError!std.SemanticVersion {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nix", "eval", "--raw", "--expr", "builtins.nixVersion" },
+    });
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        log_scoped.warn("could not get nix version:\nstdout: {s}\nstderr: {s}", .{ result.stdout, result.stderr });
+        return error.UnknownNixVersion;
+    }
+
+    return std.SemanticVersion.parse(result.stdout);
+}
+
+/// Some options are optional to support older Nix versions
+/// or because they only appear once their corresponding
+/// experimental feature is enabled.
+pub const Config = struct {
+    @"abort-on-warn": ?Option(bool) = null,
+    @"accept-flake-config": Option(bool),
+    @"access-tokens": Option(std.json.ArrayHashMap([]const u8)),
+    @"allow-dirty": Option(bool),
+    @"allow-import-from-derivation": Option(bool),
+    @"allow-new-privileges": Option(bool),
+    @"allow-symlinked-store": Option(bool),
+    @"allow-unsafe-native-code-during-evaluation": Option(bool),
+    @"allowed-impure-host-deps": Option([]const []const u8),
+    @"allowed-uris": Option([]const []const u8),
+    @"allowed-users": Option([]const []const u8),
+    @"always-allow-substitutes": ?Option(bool) = null,
+    @"auto-allocate-uids": Option(bool),
+    @"auto-optimise-store": Option(bool),
+    @"bash-prompt": Option([]const u8),
+    @"bash-prompt-prefix": Option([]const u8),
+    @"bash-prompt-suffix": Option([]const u8),
+    @"build-dir": ?Option(?[]const u8) = null,
+    @"build-hook": Option([]const []const u8),
+    @"build-poll-interval": Option(u16),
+    @"build-users-group": Option([]const u8),
+    builders: Option([]const u8),
+    @"builders-use-substitutes": Option(bool),
+    // Called `commit-lock-file-summary` (note the additional dash) since Nix 2.23.
+    // Newer Nix versions have an alias for the old name
+    // so we use the old name to support both old and new versions.
+    @"commit-lockfile-summary": Option([]const u8),
+    @"compress-build-log": Option(bool),
+    @"connect-timeout": Option(u16),
+    cores: Option(u16),
+    @"debugger-on-trace": ?Option(bool) = null,
+    @"debugger-on-warn": ?Option(bool) = null,
+    @"diff-hook": Option(?[]const u8),
+    @"download-attempts": Option(u16),
+    @"download-buffer-size": ?Option(usize) = null,
+    @"download-speed": Option(u32),
+    @"eval-cache": Option(bool),
+    @"eval-system": ?Option([]const u8) = null,
+    @"experimental-features": Option([]const []const u8),
+    @"extra-platforms": Option([]const []const u8),
+    fallback: Option(bool),
+    @"filter-syscalls": Option(bool),
+    @"flake-registry": Option([]const u8),
+    @"fsync-metadata": Option(bool),
+    @"gc-reserved-space": Option(u64),
+    @"hashed-mirrors": Option([]const []const u8),
+    @"http-connections": Option(u16),
+    http2: Option(bool),
+    @"id-count": Option(u32),
+    @"ignore-try": Option(bool),
+    @"ignored-acls": Option([]const []const u8),
+    @"impersonate-linux-26": Option(bool),
+    @"impure-env": ?Option(std.json.ArrayHashMap([]const u8)) = null,
+    @"keep-build-log": Option(bool),
+    @"keep-derivations": Option(bool),
+    @"keep-env-derivations": Option(bool),
+    @"keep-failed": Option(bool),
+    @"keep-going": Option(bool),
+    @"keep-outputs": Option(bool),
+    @"log-lines": Option(u32),
+    @"max-build-log-size": Option(u64),
+    @"max-call-depth": ?Option(u16) = null,
+    @"max-free": Option(u64),
+    @"max-jobs": Option(u16),
+    @"max-silent-time": Option(u32),
+    @"max-substitution-jobs": Option(u16),
+    @"min-free": Option(u64),
+    @"min-free-check-interval": Option(u16),
+    @"nar-buffer-size": Option(u32),
+    @"narinfo-cache-negative-ttl": Option(u32),
+    @"narinfo-cache-positive-ttl": Option(u32),
+    @"netrc-file": Option([]const u8),
+    @"nix-path": Option([]const []const u8),
+    @"nix-shell-always-looks-for-shell-nix": ?Option(bool) = null,
+    @"nix-shell-shebang-arguments-relative-to-script": ?Option(bool) = null,
+    @"plugin-files": Option([]const []const u8),
+    @"post-build-hook": Option([]const u8),
+    @"pre-build-hook": Option([]const u8),
+    @"preallocate-contents": Option(bool),
+    @"print-missing": Option(bool),
+    @"pure-eval": Option(bool),
+    @"require-drop-supplementary-groups": Option(bool),
+    @"require-sigs": Option(bool),
+    @"restrict-eval": Option(bool),
+    @"run-diff-hook": Option(bool),
+    sandbox: Option(bool),
+    @"sandbox-build-dir": Option([]const u8),
+    @"sandbox-dev-shm-size": Option([]const u8),
+    @"sandbox-fallback": Option(bool),
+    @"sandbox-paths": Option([]const []const u8),
+    @"secret-key-files": Option([]const []const u8),
+    @"show-trace": Option(bool),
+    @"ssl-cert-file": Option([]const u8),
+    @"stalled-download-timeout": Option(u16),
+    @"start-id": Option(u32),
+    store: Option([]const u8),
+    substitute: Option(bool),
+    substituters: Option([]const []const u8),
+    @"sync-before-registering": Option(bool),
+    system: Option([]const u8),
+    @"system-features": Option([]const []const u8),
+    @"tarball-ttl": Option(u32),
+    timeout: Option(u32),
+    @"trace-function-calls": Option(bool),
+    @"trace-verbose": Option(bool),
+    @"trust-tarballs-from-git-forges": ?Option(bool) = null,
+    @"trusted-public-keys": Option([]const []const u8),
+    @"trusted-substituters": Option([]const []const u8),
+    @"trusted-users": Option([]const []const u8),
+    @"upgrade-nix-store-path-url": ?Option([]const u8) = null,
+    @"use-case-hack": Option(bool),
+    @"use-cgroups": Option(bool),
+    @"use-registries": Option(bool),
+    @"use-sqlite-wal": Option(bool),
+    @"use-xdg-base-directories": Option(bool),
+    @"user-agent-suffix": Option([]const u8),
+    @"warn-dirty": Option(bool),
+    @"warn-large-path-threshold": ?Option(u64) = null,
+
+    pub fn Option(comptime T: type) type {
+        return struct {
+            aliases: []const []const u8,
+            defaultValue: T,
+            description: []const u8,
+            documentDefault: bool,
+            experimentalFeature: ?[]const u8,
+            value: T,
+        };
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, opts: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const value = try std.json.innerParse(std.json.Value, arena.allocator(), source, opts);
+
+        return jsonParseFromValue(allocator, value, opts);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, opts: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
+        if (source != .object) return error.UnexpectedToken;
+
+        var self: @This() = undefined;
+
+        inline for (std.meta.fields(@This())) |field| {
+            const option_object = source.object.get(field.name) orelse alias: for (source.object.keys()) |key| {
+                const option_object = source.object.get(key).?;
+                if (option_object != .object) return error.UnexpectedToken;
+
+                const aliases_array = option_object.object.get("aliases") orelse return error.MissingField;
+                if (aliases_array != .array) return error.UnexpectedToken;
+
+                for (aliases_array.array.items) |alias_string| {
+                    if (alias_string != .string) return error.UnexpectedToken;
+
+                    if (!std.mem.eql(u8, alias_string.string, field.name)) continue;
+
+                    break :alias option_object;
+                }
+            } else if (field.default_value) |default_value| {
+                @field(self, field.name) = @as(*align(1) const field.type, @ptrCast(default_value)).*;
+                comptime continue;
+            } else return error.MissingField;
+
+            @field(self, field.name) = try std.json.innerParseFromValue(field.type, allocator, option_object, opts);
+        }
+
+        return self;
+    }
+};
+
+pub const ConfigError =
+    std.process.Child.RunError ||
+    std.json.ParseError(std.json.Scanner) ||
+    error{CouldNotReadNixConfig};
+
+pub const ConfigDiagnostics = union {
+    CouldNotReadNixConfig: ChildProcessDiagnostics,
+};
+
+pub fn config(
+    allocator: std.mem.Allocator,
+    diagnostics: ?*ConfigDiagnostics,
+) ConfigError!std.json.Parsed(Config) {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .max_output_bytes = 100 * mem.b_per_kib,
+        .argv = &.{ "nix", "show-config", "--json" },
+    });
+    defer allocator.free(result.stdout);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        if (diagnostics) |d| d.* = .{ .CouldNotReadNixConfig = ChildProcessDiagnostics.fromRunResult(result) };
+        return error.CouldNotReadNixConfig;
+    }
+    allocator.free(result.stderr);
+
+    return std.json.parseFromSlice(Config, allocator, result.stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+}
+
+test config {
+    // this test spawns a process
+    if (true) return error.SkipZigTest;
+
+    (try config(std.testing.allocator, null)).deinit();
+}
+
 /// Output of `nix flake metadata --json`.
 pub const FlakeMetadata = struct {
     description: ?[]const u8 = null,
@@ -249,21 +650,21 @@ pub const FlakeMetadata = struct {
             };
         }
 
-        pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+        pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, opts: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
 
-            const value = try std.json.innerParse(std.json.Value, arena.allocator(), source, options);
+            const value = try std.json.innerParse(std.json.Value, arena.allocator(), source, opts);
 
-            return jsonParseFromValue(allocator, value, options);
+            return jsonParseFromValue(allocator, value, opts);
         }
 
-        pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
+        pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, opts: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
             if (source != .object) return error.UnexpectedToken;
 
             const type_str = (source.object.get("type") orelse return error.MissingField).string;
 
-            var active_options = options;
+            var active_options = opts;
             active_options.ignore_unknown_fields = true;
 
             return self: inline for (std.meta.fields(@This())) |field| {
@@ -862,10 +1263,10 @@ pub const FlakeMetadata = struct {
             };
 
             /// Assumes `trust-tarballs-from-git-forges = true` for checking whether inputs are locked for validation.
-            pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+            pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, opts: std.json.ParseOptions) !@This() {
                 if (source != .object) return error.UnexpectedToken;
 
-                if (source.object.get("flake")) |flake| if (flake == .bool and !flake.bool) return .{ .non_flake = try std.json.parseFromValueLeaky(NonFlake, allocator, source, options) };
+                if (source.object.get("flake")) |flake| if (flake == .bool and !flake.bool) return .{ .non_flake = try std.json.parseFromValueLeaky(NonFlake, allocator, source, opts) };
 
                 const inputs = if (source.object.get("inputs")) |inputs| inputs: {
                     var map = std.StringArrayHashMapUnmanaged([]const []const u8){};
@@ -874,18 +1275,18 @@ pub const FlakeMetadata = struct {
                     var iter = inputs.object.iterator();
                     while (iter.next()) |input| try map.put(allocator, input.key_ptr.*, switch (input.value_ptr.*) {
                         .string => |string| &.{string},
-                        .array => try std.json.parseFromValueLeaky([]const []const u8, allocator, input.value_ptr.*, options),
+                        .array => try std.json.parseFromValueLeaky([]const []const u8, allocator, input.value_ptr.*, opts),
                         else => return error.UnexpectedToken,
                     });
 
                     break :inputs std.json.ArrayHashMap([]const []const u8){ .map = map };
                 } else null;
-                const locked = if (source.object.get("locked")) |locked| try std.json.parseFromValueLeaky(Input, allocator, locked, options) else null;
+                const locked = if (source.object.get("locked")) |locked| try std.json.parseFromValueLeaky(Input, allocator, locked, opts) else null;
                 if (locked) |l| {
                     if (!l.locked(true)) return error.MissingField;
                     std.debug.assert(l.valid());
                 }
-                const original = if (source.object.get("original")) |original| try std.json.parseFromValueLeaky(Input, allocator, original, options) else null;
+                const original = if (source.object.get("original")) |original| try std.json.parseFromValueLeaky(Input, allocator, original, opts) else null;
                 if (original) |o| std.debug.assert(o.valid());
 
                 return if (inputs != null and locked != null and original != null) .{ .full = .{
@@ -905,195 +1306,8 @@ pub const FlakeMetadata = struct {
     };
 };
 
-pub const ChildProcessDiagnostics = struct {
-    term: std.process.Child.Term,
-    stderr: []u8,
-
-    fn fromRunResult(result: std.process.Child.RunResult) @This() {
-        return .{
-            .term = result.term,
-            .stderr = result.stderr,
-        };
-    }
-
-    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.stderr);
-    }
-};
-
-/// Some options are optional to support older Nix versions
-/// or because they only appear once their corresponding
-/// experimental feature is enabled.
-pub const Config = struct {
-    @"abort-on-warn": ?Option(bool) = null,
-    @"accept-flake-config": Option(bool),
-    @"access-tokens": Option(std.json.ArrayHashMap([]const u8)),
-    @"allow-dirty": Option(bool),
-    @"allow-import-from-derivation": Option(bool),
-    @"allow-new-privileges": Option(bool),
-    @"allow-symlinked-store": Option(bool),
-    @"allow-unsafe-native-code-during-evaluation": Option(bool),
-    @"allowed-impure-host-deps": Option([]const []const u8),
-    @"allowed-uris": Option([]const []const u8),
-    @"allowed-users": Option([]const []const u8),
-    @"always-allow-substitutes": ?Option(bool) = null,
-    @"auto-allocate-uids": Option(bool),
-    @"auto-optimise-store": Option(bool),
-    @"bash-prompt": Option([]const u8),
-    @"bash-prompt-prefix": Option([]const u8),
-    @"bash-prompt-suffix": Option([]const u8),
-    @"build-dir": ?Option(?[]const u8) = null,
-    @"build-hook": Option([]const []const u8),
-    @"build-poll-interval": Option(u16),
-    @"build-users-group": Option([]const u8),
-    builders: Option([]const u8),
-    @"builders-use-substitutes": Option(bool),
-    // Called `commit-lock-file-summary` (note the additional dash) since Nix 2.23.
-    // Newer Nix versions have an alias for the old name
-    // so we use the old name to support both old and new versions.
-    @"commit-lockfile-summary": Option([]const u8),
-    @"compress-build-log": Option(bool),
-    @"connect-timeout": Option(u16),
-    cores: Option(u16),
-    @"debugger-on-trace": ?Option(bool) = null,
-    @"debugger-on-warn": ?Option(bool) = null,
-    @"diff-hook": Option(?[]const u8),
-    @"download-attempts": Option(u16),
-    @"download-buffer-size": ?Option(usize) = null,
-    @"download-speed": Option(u32),
-    @"eval-cache": Option(bool),
-    @"eval-system": ?Option([]const u8) = null,
-    @"experimental-features": Option([]const []const u8),
-    @"extra-platforms": Option([]const []const u8),
-    fallback: Option(bool),
-    @"filter-syscalls": Option(bool),
-    @"flake-registry": Option([]const u8),
-    @"fsync-metadata": Option(bool),
-    @"gc-reserved-space": Option(u64),
-    @"hashed-mirrors": Option([]const []const u8),
-    @"http-connections": Option(u16),
-    http2: Option(bool),
-    @"id-count": Option(u32),
-    @"ignore-try": Option(bool),
-    @"ignored-acls": Option([]const []const u8),
-    @"impersonate-linux-26": Option(bool),
-    @"impure-env": ?Option(std.json.ArrayHashMap([]const u8)) = null,
-    @"keep-build-log": Option(bool),
-    @"keep-derivations": Option(bool),
-    @"keep-env-derivations": Option(bool),
-    @"keep-failed": Option(bool),
-    @"keep-going": Option(bool),
-    @"keep-outputs": Option(bool),
-    @"log-lines": Option(u32),
-    @"max-build-log-size": Option(u64),
-    @"max-call-depth": ?Option(u16) = null,
-    @"max-free": Option(u64),
-    @"max-jobs": Option(u16),
-    @"max-silent-time": Option(u32),
-    @"max-substitution-jobs": Option(u16),
-    @"min-free": Option(u64),
-    @"min-free-check-interval": Option(u16),
-    @"nar-buffer-size": Option(u32),
-    @"narinfo-cache-negative-ttl": Option(u32),
-    @"narinfo-cache-positive-ttl": Option(u32),
-    @"netrc-file": Option([]const u8),
-    @"nix-path": Option([]const []const u8),
-    @"nix-shell-always-looks-for-shell-nix": ?Option(bool) = null,
-    @"nix-shell-shebang-arguments-relative-to-script": ?Option(bool) = null,
-    @"plugin-files": Option([]const []const u8),
-    @"post-build-hook": Option([]const u8),
-    @"pre-build-hook": Option([]const u8),
-    @"preallocate-contents": Option(bool),
-    @"print-missing": Option(bool),
-    @"pure-eval": Option(bool),
-    @"require-drop-supplementary-groups": Option(bool),
-    @"require-sigs": Option(bool),
-    @"restrict-eval": Option(bool),
-    @"run-diff-hook": Option(bool),
-    sandbox: Option(bool),
-    @"sandbox-build-dir": Option([]const u8),
-    @"sandbox-dev-shm-size": Option([]const u8),
-    @"sandbox-fallback": Option(bool),
-    @"sandbox-paths": Option([]const []const u8),
-    @"secret-key-files": Option([]const []const u8),
-    @"show-trace": Option(bool),
-    @"ssl-cert-file": Option([]const u8),
-    @"stalled-download-timeout": Option(u16),
-    @"start-id": Option(u32),
-    store: Option([]const u8),
-    substitute: Option(bool),
-    substituters: Option([]const []const u8),
-    @"sync-before-registering": Option(bool),
-    system: Option([]const u8),
-    @"system-features": Option([]const []const u8),
-    @"tarball-ttl": Option(u32),
-    timeout: Option(u32),
-    @"trace-function-calls": Option(bool),
-    @"trace-verbose": Option(bool),
-    @"trust-tarballs-from-git-forges": ?Option(bool) = null,
-    @"trusted-public-keys": Option([]const []const u8),
-    @"trusted-substituters": Option([]const []const u8),
-    @"trusted-users": Option([]const []const u8),
-    @"upgrade-nix-store-path-url": ?Option([]const u8) = null,
-    @"use-case-hack": Option(bool),
-    @"use-cgroups": Option(bool),
-    @"use-registries": Option(bool),
-    @"use-sqlite-wal": Option(bool),
-    @"use-xdg-base-directories": Option(bool),
-    @"user-agent-suffix": Option([]const u8),
-    @"warn-dirty": Option(bool),
-    @"warn-large-path-threshold": ?Option(u64) = null,
-
-    pub fn Option(comptime T: type) type {
-        return struct {
-            aliases: []const []const u8,
-            defaultValue: T,
-            description: []const u8,
-            documentDefault: bool,
-            experimentalFeature: ?[]const u8,
-            value: T,
-        };
-    }
-
-    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
-        const value = try std.json.innerParse(std.json.Value, arena.allocator(), source, options);
-
-        return jsonParseFromValue(allocator, value, options);
-    }
-
-    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!@This() {
-        if (source != .object) return error.UnexpectedToken;
-
-        var self: @This() = undefined;
-
-        inline for (std.meta.fields(@This())) |field| {
-            const option_object = source.object.get(field.name) orelse alias: for (source.object.keys()) |key| {
-                const option_object = source.object.get(key).?;
-                if (option_object != .object) return error.UnexpectedToken;
-
-                const aliases_array = option_object.object.get("aliases") orelse return error.MissingField;
-                if (aliases_array != .array) return error.UnexpectedToken;
-
-                for (aliases_array.array.items) |alias_string| {
-                    if (alias_string != .string) return error.UnexpectedToken;
-
-                    if (!std.mem.eql(u8, alias_string.string, field.name)) continue;
-
-                    break :alias option_object;
-                }
-            } else if (field.default_value) |default_value| {
-                @field(self, field.name) = @as(*align(1) const field.type, @ptrCast(default_value)).*;
-                comptime continue;
-            } else return error.MissingField;
-
-            @field(self, field.name) = try std.json.innerParseFromValue(field.type, allocator, option_object, options);
-        }
-
-        return self;
-    }
+pub const FlakeMetadataDiagnostics = union {
+    FlakeMetadataFailed: ChildProcessDiagnostics,
 };
 
 pub const FlakeMetadataOptions = struct {
@@ -1102,143 +1316,208 @@ pub const FlakeMetadataOptions = struct {
     no_write_lock_file: bool = true,
 };
 
+pub fn flakeMetadata(
+    allocator: std.mem.Allocator,
+    flake: []const u8,
+    opts: FlakeMetadataOptions,
+    diagnostics: ?*FlakeMetadataDiagnostics,
+) !std.json.Parsed(FlakeMetadata) {
+    const argv = try std.mem.concat(allocator, []const u8, &.{
+        &.{
+            "nix",
+            "flake",
+            "metadata",
+        },
+        if (opts.refresh) &.{"--refresh"} else &.{},
+        if (opts.no_write_lock_file) &.{"--no-write-lock-file"} else &.{},
+        &.{
+            "--json",
+            flake,
+        },
+    });
+    defer allocator.free(argv);
+
+    const result = try options.runFn(.{
+        .allocator = allocator,
+        .max_output_bytes = opts.max_output_bytes,
+        .argv = argv,
+    });
+    defer allocator.free(result.stdout);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        log_scoped.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
+        if (diagnostics) |d| d.* = .{ .FlakeMetadataFailed = ChildProcessDiagnostics.fromRunResult(result) };
+        return error.FlakeMetadataFailed; // TODO return more specific error
+    }
+    defer allocator.free(result.stderr);
+
+    const json_options = .{ .ignore_unknown_fields = true };
+
+    const json = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, json_options);
+    defer json.deinit();
+
+    return std.json.parseFromValue(FlakeMetadata, allocator, json.value, json_options);
+}
+
 pub const FlakePrefetchOptions = struct {
     max_output_bytes: usize = 50 * mem.b_per_kib,
     refresh: bool = true,
 };
 
-pub const FailedBuilds = struct {
-    /// derivations that failed to build
-    builds: []const []const u8,
-    /// derivations that have dependencies that failed
-    dependents: []const []const u8,
-
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-        for (self.builds) |drv| allocator.free(drv);
-        allocator.free(self.builds);
-
-        for (self.dependents) |drv| allocator.free(drv);
-        allocator.free(self.dependents);
-
-        self.* = undefined;
-    }
-
-    /// Duplicates the slices taken from `stderr` so you can free it after the call.
-    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr_reader: anytype) !@This() {
-        var builds = std.StringArrayHashMapUnmanaged(void){};
-        defer builds.deinit(allocator);
-
-        var dependents = std.StringArrayHashMapUnmanaged(void){};
-        defer dependents.deinit(allocator);
-
-        var line = std.ArrayListUnmanaged(u8){};
-        defer line.deinit(allocator);
-        const line_writer = line.writer(allocator);
-
-        line: while (true) : (line.clearRetainingCapacity()) {
-            stderr_reader.streamUntilDelimiter(line_writer, '\n', null) catch |err| switch (err) {
-                error.EndOfStream => break :line,
-                else => |e| return e,
-            };
-
-            const readExpected = struct {
-                fn call(reader: anytype, comptime slice: []const u8) !bool {
-                    var buf: [slice.len]u8 = undefined;
-                    const len = reader.readAll(&buf) catch |err|
-                        return if (err == error.EndOfStream) false else err;
-                    return std.mem.eql(u8, buf[0..len], slice);
-                }
-            }.call;
-
-            builds: {
-                var line_stream = std.io.fixedBufferStream(line.items);
-                const line_reader = line_stream.reader();
-
-                var drv_list = std.ArrayListUnmanaged(u8){};
-                errdefer drv_list.deinit(allocator);
-
-                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
-                if (!try readExpected(line_reader, "rror: builder for '")) break :builds;
-                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :builds;
-                if (!try readExpected(line_reader, " failed")) break :builds;
-
-                const drv = try drv_list.toOwnedSlice(allocator);
-                errdefer allocator.free(drv);
-
-                try builds.put(allocator, drv, {});
-            }
-
-            foreign_builds: {
-                var line_stream = std.io.fixedBufferStream(line.items);
-                const line_reader = line_stream.reader();
-
-                var drv_list = std.ArrayListUnmanaged(u8){};
-                errdefer drv_list.deinit(allocator);
-
-                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
-                if (!try readExpected(line_reader, "rror: a '")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, " is required to build '")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, ", but I am a '")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
-                if (line_reader.readByte() != error.EndOfStream) break :foreign_builds;
-
-                const drv = try drv_list.toOwnedSlice(allocator);
-                errdefer allocator.free(drv);
-
-                try builds.put(allocator, drv, {});
-            }
-
-            dependents: {
-                var line_stream = std.io.fixedBufferStream(line.items);
-                const line_reader = line_stream.reader();
-
-                var drv_list = std.ArrayListUnmanaged(u8){};
-                errdefer drv_list.deinit(allocator);
-
-                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
-                if (!try readExpected(line_reader, "rror: ")) break :dependents;
-                line_reader.streamUntilDelimiter(std.io.null_writer, ' ', null) catch break :dependents;
-                if (!try readExpected(line_reader, "dependencies of derivation '")) break :dependents;
-                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :dependents;
-                if (!try readExpected(line_reader, " failed to build")) break :dependents;
-
-                const drv = try drv_list.toOwnedSlice(allocator);
-                errdefer allocator.free(drv);
-
-                try dependents.put(allocator, drv, {});
-            }
-        }
-
-        const builds_slice = try allocator.dupe([]const u8, builds.keys());
-        errdefer allocator.free(builds_slice);
-
-        const dependents_slice = try allocator.dupe([]const u8, dependents.keys());
-        errdefer allocator.free(dependents_slice);
-
-        return .{
-            .builds = builds_slice,
-            .dependents = dependents_slice,
-        };
-    }
+pub const FlakeMetadataLocksDiagnostics = union {
+    FlakePrefetchFailed: ChildProcessDiagnostics,
 };
+
+/// This is faster than `flakeMetadata()` if you only need the contents of `flake.lock`.
+pub fn flakeMetadataLocks(
+    allocator: std.mem.Allocator,
+    flake: []const u8,
+    opts: FlakePrefetchOptions,
+    diagnostics: ?*FlakeMetadataLocksDiagnostics,
+) !?std.json.Parsed(FlakeMetadata.Locks) {
+    const argv = try std.mem.concat(allocator, []const u8, &.{
+        &.{
+            "nix",
+            "flake",
+            "prefetch",
+            "--no-use-registries",
+            "--flake-registry",
+            "",
+        },
+        if (opts.refresh) &.{"--refresh"} else &.{},
+        &.{
+            "--json",
+            flake,
+        },
+    });
+    defer allocator.free(argv);
+
+    const result = try options.runFn(.{
+        .allocator = allocator,
+        .max_output_bytes = opts.max_output_bytes,
+        .argv = argv,
+    });
+    defer allocator.free(result.stdout);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        log_scoped.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
+        if (diagnostics) |d| d.* = .{ .FlakePrefetchFailed = ChildProcessDiagnostics.fromRunResult(result) };
+        return error.FlakePrefetchFailed; // TODO return more specific error
+    }
+    defer allocator.free(result.stderr);
+
+    const json_options = .{ .ignore_unknown_fields = true };
+
+    const json = json: {
+        const flake_lock = flake_lock: {
+            var stdout_parsed = try std.json.parseFromSlice(struct { storePath: []const u8 }, allocator, result.stdout, json_options);
+            defer stdout_parsed.deinit();
+
+            const path = try std.fs.path.join(allocator, &.{ stdout_parsed.value.storePath, "flake.lock" });
+            defer allocator.free(path);
+
+            break :flake_lock std.fs.openFileAbsolute(path, .{}) catch |err|
+                return if (err == error.FileNotFound) null else err;
+        };
+        defer flake_lock.close();
+
+        var json_reader = std.json.reader(allocator, flake_lock.reader());
+        defer json_reader.deinit();
+
+        break :json try std.json.parseFromTokenSource(std.json.Value, allocator, &json_reader, json_options);
+    };
+    defer json.deinit();
+
+    return try std.json.parseFromValue(FlakeMetadata.Locks, allocator, json.value, json_options);
+}
+
+test flakeMetadataLocks {
+    // this test needs internet and spawns child processes
+    if (true) return error.SkipZigTest;
+
+    if (try flakeMetadataLocks(std.testing.allocator, "github:IntersectMBO/cardano-db-sync/13.0.4", .{ .refresh = false }, null)) |locks| locks.deinit();
+}
+
+pub fn lockFlakeRef(
+    allocator: std.mem.Allocator,
+    flake_ref: []const u8,
+    opts: FlakeMetadataOptions,
+    diagnostics: ?*FlakeMetadataDiagnostics,
+) ![]const u8 {
+    const flake = std.mem.sliceTo(flake_ref, '#');
+
+    const metadata = try flakeMetadata(allocator, flake, opts, diagnostics);
+    defer metadata.deinit();
+
+    const flake_ref_locked = try std.mem.concat(allocator, u8, &.{
+        metadata.value.url,
+        flake_ref[flake.len..],
+    });
+    errdefer allocator.free(flake_ref_locked);
+
+    return flake_ref_locked;
+}
+
+test lockFlakeRef {
+    // this test spawns child processes
+    if (true) return error.SkipZigTest;
+
+    const latest = "github:NixOS/nixpkgs";
+    const input = latest ++ "/23.11";
+    const expected = latest ++ "/057f9aecfb71c4437d2b27d3323df7f93c010b7e?narHash=sha256-MxCVrXY6v4QmfTwIysjjaX0XUhqBbxTWWB4HXtDYsdk%3D";
+
+    {
+        const locked = locked: {
+            var diagnostics: FlakeMetadataDiagnostics = undefined;
+            errdefer |err| switch (err) {
+                error.FlakeMetadataFailed => {
+                    defer diagnostics.FlakeMetadataFailed.deinit(std.testing.allocator);
+                    log_scoped.err("term: {}\nstderr: {s}", .{
+                        diagnostics.FlakeMetadataFailed.term,
+                        diagnostics.FlakeMetadataFailed.stderr,
+                    });
+                },
+                else => {},
+            };
+            break :locked try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
+        };
+        defer std.testing.allocator.free(locked);
+
+        try std.testing.expectEqualStrings(expected, locked);
+    }
+
+    {
+        const locked = locked: {
+            var diagnostics: FlakeMetadataDiagnostics = undefined;
+            errdefer |err| switch (err) {
+                error.FlakeMetadataFailed => {
+                    defer diagnostics.FlakeMetadataFailed.deinit(std.testing.allocator);
+                    log_scoped.err("term: {}\nstderr: {s}", .{
+                        diagnostics.FlakeMetadataFailed.term,
+                        diagnostics.FlakeMetadataFailed.stderr,
+                    });
+                },
+                else => {},
+            };
+            break :locked try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
+        };
+        defer std.testing.allocator.free(locked);
+
+        try std.testing.expectEqualStrings(expected ++ "#hello^out", locked);
+    }
+}
 
 pub const StoreInfo = struct {
     url: []const u8,
     version: ?std.SemanticVersion = null,
     trusted: bool = false,
 
-    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, opts: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!@This() {
         const inner = try std.json.innerParse(struct {
             url: []const u8,
             version: ?[]const u8 = null,
             trusted: ?u1 = null,
-        }, allocator, source, options);
+        }, allocator, source, opts);
 
         return .{
             .url = try allocator.dupe(u8, inner.url),
@@ -1254,285 +1533,34 @@ pub const StoreInfo = struct {
     }
 };
 
-pub fn impl(
-    comptime run_fn: anytype,
-    comptime log_scope: ?@TypeOf(.enum_literal),
-) type {
-    const log_scoped = if (log_scope) |scope| std.log.scoped(scope) else std.log;
+pub const StoreInfoError =
+    std.process.Child.RunError ||
+    std.json.ParseError(std.json.Scanner) ||
+    error{CouldNotPingNixStore};
 
-    return struct {
-        pub fn version(allocator: std.mem.Allocator) (std.process.Child.RunError || error{ InvalidVersion, Overflow, UnknownNixVersion })!std.SemanticVersion {
-            const result = try std.process.Child.run(.{
-                .allocator = allocator,
-                .argv = &.{ "nix", "eval", "--raw", "--expr", "builtins.nixVersion" },
-            });
-            defer {
-                allocator.free(result.stdout);
-                allocator.free(result.stderr);
-            }
+pub const StoreInfoDiagnostics = union {
+    CouldNotPingNixStore: ChildProcessDiagnostics,
+};
 
-            if (result.term != .Exited or result.term.Exited != 0) {
-                log_scoped.warn("could not get nix version:\nstdout: {s}\nstderr: {s}", .{ result.stdout, result.stderr });
-                return error.UnknownNixVersion;
-            }
+pub fn storeInfo(
+    allocator: std.mem.Allocator,
+    store: []const u8,
+    diagnostics: ?*StoreInfoDiagnostics,
+) StoreInfoError!std.json.Parsed(StoreInfo) {
+    const result = try options.runFn(.{
+        .allocator = allocator,
+        .argv = &.{ "nix", "store", "info", "--json", "--store", store },
+    });
+    defer allocator.free(result.stdout);
 
-            return std.SemanticVersion.parse(result.stdout);
-        }
+    if (result.term != .Exited or result.term.Exited != 0) {
+        if (diagnostics) |d| d.* = .{ .CouldNotPingNixStore = ChildProcessDiagnostics.fromRunResult(result) };
+        return error.CouldNotPingNixStore;
+    }
+    allocator.free(result.stderr);
 
-        pub const ConfigDiagnostics = union {
-            CouldNotReadNixConfig: ChildProcessDiagnostics,
-        };
-
-        pub fn config(
-            allocator: std.mem.Allocator,
-            diagnostics: ?*ConfigDiagnostics,
-        ) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotReadNixConfig})!std.json.Parsed(Config) {
-            const result = try std.process.Child.run(.{
-                .allocator = allocator,
-                .max_output_bytes = 100 * mem.b_per_kib,
-                .argv = &.{ "nix", "show-config", "--json" },
-            });
-            defer allocator.free(result.stdout);
-
-            if (result.term != .Exited or result.term.Exited != 0) {
-                if (diagnostics) |d| d.* = .{ .CouldNotReadNixConfig = ChildProcessDiagnostics.fromRunResult(result) };
-                return error.CouldNotReadNixConfig;
-            }
-            allocator.free(result.stderr);
-
-            return std.json.parseFromSlice(Config, allocator, result.stdout, .{
-                .ignore_unknown_fields = true,
-                .allocate = .alloc_always,
-            });
-        }
-
-        test config {
-            // this test spawns a process
-            if (true) return error.SkipZigTest;
-
-            (try config(std.testing.allocator, null)).deinit();
-        }
-
-        pub const FlakeMetadataDiagnostics = union {
-            FlakeMetadataFailed: ChildProcessDiagnostics,
-        };
-
-        pub fn flakeMetadata(
-            allocator: std.mem.Allocator,
-            flake: []const u8,
-            opts: FlakeMetadataOptions,
-            diagnostics: ?*FlakeMetadataDiagnostics,
-        ) !std.json.Parsed(FlakeMetadata) {
-            const argv = try std.mem.concat(allocator, []const u8, &.{
-                &.{
-                    "nix",
-                    "flake",
-                    "metadata",
-                },
-                if (opts.refresh) &.{"--refresh"} else &.{},
-                if (opts.no_write_lock_file) &.{"--no-write-lock-file"} else &.{},
-                &.{
-                    "--json",
-                    flake,
-                },
-            });
-            defer allocator.free(argv);
-
-            const result = try run_fn(.{
-                .allocator = allocator,
-                .max_output_bytes = opts.max_output_bytes,
-                .argv = argv,
-            });
-            defer allocator.free(result.stdout);
-
-            if (result.term != .Exited or result.term.Exited != 0) {
-                log_scoped.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
-                if (diagnostics) |d| d.* = .{ .FlakeMetadataFailed = ChildProcessDiagnostics.fromRunResult(result) };
-                return error.FlakeMetadataFailed; // TODO return more specific error
-            }
-            defer allocator.free(result.stderr);
-
-            const json_options = .{ .ignore_unknown_fields = true };
-
-            const json = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, json_options);
-            defer json.deinit();
-
-            return std.json.parseFromValue(FlakeMetadata, allocator, json.value, json_options);
-        }
-
-        pub const FlakeMetadataLocksDiagnostics = union {
-            FlakePrefetchFailed: ChildProcessDiagnostics,
-        };
-
-        /// This is faster than `flakeMetadata()` if you only need the contents of `flake.lock`.
-        pub fn flakeMetadataLocks(
-            allocator: std.mem.Allocator,
-            flake: []const u8,
-            opts: FlakePrefetchOptions,
-            diagnostics: ?*FlakeMetadataLocksDiagnostics,
-        ) !?std.json.Parsed(FlakeMetadata.Locks) {
-            const argv = try std.mem.concat(allocator, []const u8, &.{
-                &.{
-                    "nix",
-                    "flake",
-                    "prefetch",
-                    "--no-use-registries",
-                    "--flake-registry",
-                    "",
-                },
-                if (opts.refresh) &.{"--refresh"} else &.{},
-                &.{
-                    "--json",
-                    flake,
-                },
-            });
-            defer allocator.free(argv);
-
-            const result = try run_fn(.{
-                .allocator = allocator,
-                .max_output_bytes = opts.max_output_bytes,
-                .argv = argv,
-            });
-            defer allocator.free(result.stdout);
-
-            if (result.term != .Exited or result.term.Exited != 0) {
-                log_scoped.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
-                if (diagnostics) |d| d.* = .{ .FlakePrefetchFailed = ChildProcessDiagnostics.fromRunResult(result) };
-                return error.FlakePrefetchFailed; // TODO return more specific error
-            }
-            defer allocator.free(result.stderr);
-
-            const json_options = .{ .ignore_unknown_fields = true };
-
-            const json = json: {
-                const flake_lock = flake_lock: {
-                    var stdout_parsed = try std.json.parseFromSlice(struct { storePath: []const u8 }, allocator, result.stdout, json_options);
-                    defer stdout_parsed.deinit();
-
-                    const path = try std.fs.path.join(allocator, &.{ stdout_parsed.value.storePath, "flake.lock" });
-                    defer allocator.free(path);
-
-                    break :flake_lock std.fs.openFileAbsolute(path, .{}) catch |err|
-                        return if (err == error.FileNotFound) null else err;
-                };
-                defer flake_lock.close();
-
-                var json_reader = std.json.reader(allocator, flake_lock.reader());
-                defer json_reader.deinit();
-
-                break :json try std.json.parseFromTokenSource(std.json.Value, allocator, &json_reader, json_options);
-            };
-            defer json.deinit();
-
-            return try std.json.parseFromValue(FlakeMetadata.Locks, allocator, json.value, json_options);
-        }
-
-        test flakeMetadataLocks {
-            // this test needs internet and spawns child processes
-            if (true) return error.SkipZigTest;
-
-            if (try flakeMetadataLocks(std.testing.allocator, "github:IntersectMBO/cardano-db-sync/13.0.4", .{ .refresh = false }, null)) |locks| locks.deinit();
-        }
-
-        pub fn lockFlakeRef(
-            allocator: std.mem.Allocator,
-            flake_ref: []const u8,
-            opts: FlakeMetadataOptions,
-            diagnostics: ?*FlakeMetadataDiagnostics,
-        ) ![]const u8 {
-            const flake = std.mem.sliceTo(flake_ref, '#');
-
-            const metadata = try flakeMetadata(allocator, flake, opts, diagnostics);
-            defer metadata.deinit();
-
-            const flake_ref_locked = try std.mem.concat(allocator, u8, &.{
-                metadata.value.url,
-                flake_ref[flake.len..],
-            });
-            errdefer allocator.free(flake_ref_locked);
-
-            return flake_ref_locked;
-        }
-
-        test lockFlakeRef {
-            // this test spawns child processes
-            if (true) return error.SkipZigTest;
-
-            const latest = "github:NixOS/nixpkgs";
-            const input = latest ++ "/23.11";
-            const expected = latest ++ "/057f9aecfb71c4437d2b27d3323df7f93c010b7e?narHash=sha256-MxCVrXY6v4QmfTwIysjjaX0XUhqBbxTWWB4HXtDYsdk%3D";
-
-            {
-                const locked = locked: {
-                    var diagnostics: FlakeMetadataDiagnostics = undefined;
-                    errdefer |err| switch (err) {
-                        error.FlakeMetadataFailed => {
-                            defer diagnostics.FlakeMetadataFailed.deinit(std.testing.allocator);
-                            std.log.err("term: {}\nstderr: {s}", .{
-                                diagnostics.FlakeMetadataFailed.term,
-                                diagnostics.FlakeMetadataFailed.stderr,
-                            });
-                        },
-                        else => {},
-                    };
-                    break :locked try lockFlakeRef(std.testing.allocator, input, .{}, &diagnostics);
-                };
-                defer std.testing.allocator.free(locked);
-
-                try std.testing.expectEqualStrings(expected, locked);
-            }
-
-            {
-                const locked = locked: {
-                    var diagnostics: FlakeMetadataDiagnostics = undefined;
-                    errdefer |err| switch (err) {
-                        error.FlakeMetadataFailed => {
-                            defer diagnostics.FlakeMetadataFailed.deinit(std.testing.allocator);
-                            std.log.err("term: {}\nstderr: {s}", .{
-                                diagnostics.FlakeMetadataFailed.term,
-                                diagnostics.FlakeMetadataFailed.stderr,
-                            });
-                        },
-                        else => {},
-                    };
-                    break :locked try lockFlakeRef(std.testing.allocator, input ++ "#hello^out", .{}, &diagnostics);
-                };
-                defer std.testing.allocator.free(locked);
-
-                try std.testing.expectEqualStrings(expected ++ "#hello^out", locked);
-            }
-        }
-
-        pub const StoreInfoDiagnostics = union {
-            CouldNotPingNixStore: ChildProcessDiagnostics,
-        };
-
-        pub fn storeInfo(
-            allocator: std.mem.Allocator,
-            store: []const u8,
-            diagnostics: ?*StoreInfoDiagnostics,
-        ) (std.process.Child.RunError || std.json.ParseError(std.json.Scanner) || error{CouldNotPingNixStore})!std.json.Parsed(StoreInfo) {
-            const result = try run_fn(.{
-                .allocator = allocator,
-                .argv = &.{ "nix", "store", "info", "--json", "--store", store },
-            });
-            defer allocator.free(result.stdout);
-
-            if (result.term != .Exited or result.term.Exited != 0) {
-                if (diagnostics) |d| d.* = .{ .CouldNotPingNixStore = ChildProcessDiagnostics.fromRunResult(result) };
-                return error.CouldNotPingNixStore;
-            }
-            allocator.free(result.stderr);
-
-            return std.json.parseFromSlice(StoreInfo, allocator, result.stdout, .{
-                .ignore_unknown_fields = true,
-                .allocate = .alloc_always,
-            });
-        }
-    };
+    return std.json.parseFromSlice(StoreInfo, allocator, result.stdout, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
 }
-
-pub usingnamespace impl(
-    std.process.Child.run,
-    null,
-);
