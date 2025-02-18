@@ -1445,7 +1445,7 @@ pub fn impl(
 
             const latest = "github:NixOS/nixpkgs";
             const input = latest ++ "/23.11";
-            const expected = latest ++ "/057f9aecfb71c4437d2b27d3323df7f93c010b7e";
+            const expected = latest ++ "/057f9aecfb71c4437d2b27d3323df7f93c010b7e?narHash=sha256-MxCVrXY6v4QmfTwIysjjaX0XUhqBbxTWWB4HXtDYsdk%3D";
 
             {
                 const locked = locked: {
