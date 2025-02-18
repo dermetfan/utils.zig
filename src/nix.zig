@@ -1412,7 +1412,7 @@ pub fn impl(
             return try std.json.parseFromValue(FlakeMetadata.Locks, allocator, json.value, json_options);
         }
 
-        test "flakeMetadataLocks: cardano-db-sync/13.0.4" {
+        test flakeMetadataLocks {
             // this test needs internet and spawns child processes
             if (true) return error.SkipZigTest;
 
