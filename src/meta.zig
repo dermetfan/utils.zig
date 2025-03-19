@@ -30,7 +30,7 @@ pub fn hashMapInfo(comptime T: type) struct {
     }
 
     pub fn UniformCall(comptime Func: type) type {
-        return @typeInfo(Func).Fn.return_type orelse noreturn;
+        return @typeInfo(Func).@"fn".return_type orelse noreturn;
     }
 
     pub fn uniformCall(comptime self: @This(), map: anytype, func: anytype, allocator: std.mem.Allocator, params: anytype) UniformCall(@TypeOf(func)) {
@@ -101,7 +101,7 @@ test concatTuples {
 
 pub fn OptionalChild(comptime T: type) ?type {
     return switch (@typeInfo(T)) {
-        .Array, .Vector, .Pointer, .Optional => std.meta.Child(T),
+        .array, .vector, .pointer, .optional => std.meta.Child(T),
         else => null,
     };
 }
@@ -124,7 +124,7 @@ test fieldTypes {
 }
 
 pub fn FieldsTuple(Struct: type) type {
-    if (@typeInfo(Struct).Struct.is_tuple) return Struct;
+    if (@typeInfo(Struct).@"struct".is_tuple) return Struct;
     return std.meta.Tuple(fieldTypes(Struct));
 }
 
@@ -141,17 +141,17 @@ test FieldsTuple {
 }
 
 pub fn NamedArgs(Function: type, names: []const [:0]const u8) type {
-    return @Type(.{ .Struct = std.builtin.Type.Struct{
+    return @Type(.{ .@"struct" = std.builtin.Type.Struct{
         .layout = .auto,
         .backing_integer = null,
         .decls = &.{},
         .fields = fields: {
             var fields: []const std.builtin.Type.StructField = &.{};
-            for (@typeInfo(Function).Fn.params, names) |param, name|
-                fields = fields ++ .{.{
+            for (@typeInfo(Function).@"fn".params, names) |param, name|
+                fields = fields ++ .{std.builtin.Type.StructField{
                     .name = name,
                     .type = param.type orelse @compileError("`NamedArgs()` does not support generic parameters"),
-                    .default_value = null,
+                    .default_value_ptr = null,
                     .is_comptime = false,
                     .alignment = @alignOf(param.type.?),
                 }};
@@ -170,20 +170,20 @@ test NamedArgs {
     try std.testing.expectEqual(std.meta.FieldType(NamedFuncArgs, .a), std.meta.FieldType(std.meta.ArgsTuple(Func), .@"0"));
     try std.testing.expectEqual(std.meta.FieldType(NamedFuncArgs, .b), std.meta.FieldType(std.meta.ArgsTuple(Func), .@"1"));
     try std.testing.expectEqual(std.meta.FieldType(NamedFuncArgs, .c), std.meta.FieldType(std.meta.ArgsTuple(Func), .@"2"));
-    try std.testing.expectEqual(3, @typeInfo(NamedFuncArgs).Struct.fields.len);
+    try std.testing.expectEqual(3, @typeInfo(NamedFuncArgs).@"struct".fields.len);
 }
 
 pub fn SubUnion(comptime Union: type, comptime fields: []const std.meta.FieldEnum(Union)) type {
-    comptime var info = @typeInfo(Union).Union;
+    comptime var info = @typeInfo(Union).@"union";
 
     info.fields = &.{};
     inline for (fields) |field|
         info.fields = info.fields ++ .{std.meta.fieldInfo(Union, field)};
 
-    if (@typeInfo(Union).Union.tag_type) |tag_type|
+    if (@typeInfo(Union).@"union".tag_type) |tag_type|
         info.tag_type = enums.Sub(tag_type, fields);
 
-    return @Type(.{ .Union = info });
+    return @Type(.{ .@"union" = info });
 }
 
 test SubUnion {
@@ -198,8 +198,8 @@ test SubUnion {
 }
 
 pub fn MergedUnions(comptime A: type, comptime B: type, comptime tagged: bool) type {
-    const a = @typeInfo(A).Union;
-    const b = @typeInfo(B).Union;
+    const a = @typeInfo(A).@"union";
+    const b = @typeInfo(B).@"union";
 
     var info = a;
 
@@ -213,14 +213,14 @@ pub fn MergedUnions(comptime A: type, comptime B: type, comptime tagged: bool) t
         break :blk enums.Merged(&.{ a_tag, b_tag }, true);
     } else null;
 
-    return @Type(.{ .Union = info });
+    return @Type(.{ .@"union" = info });
 }
 
 test MergedUnions {
     const expectEqualUnions = struct {
         fn expectEqualUnions(comptime A: type, comptime B: type) !void {
-            const a = @typeInfo(A).Union;
-            const b = @typeInfo(B).Union;
+            const a = @typeInfo(A).@"union";
+            const b = @typeInfo(B).@"union";
 
             inline for (a.fields, b.fields) |a_field, b_field| {
                 try std.testing.expectEqualStrings(a_field.name, b_field.name);
@@ -232,8 +232,8 @@ test MergedUnions {
                 try std.testing.expectEqualStrings(a_decl.name, b_decl.name);
 
             if (a.tag_type != null and b.tag_type != null) {
-                const a_tag = @typeInfo(a.tag_type.?).Enum;
-                const b_tag = @typeInfo(b.tag_type.?).Enum;
+                const a_tag = @typeInfo(a.tag_type.?).@"enum";
+                const b_tag = @typeInfo(b.tag_type.?).@"enum";
 
                 try std.testing.expectEqual(a_tag.tag_type, b_tag.tag_type);
             } else try std.testing.expect((a.tag_type == null) == (b.tag_type == null));
@@ -269,10 +269,10 @@ test MergedUnions {
 }
 
 pub fn MergedStructs(comptime A: type, comptime B: type) type {
-    var info = @typeInfo(A).Struct;
+    var info = @typeInfo(A).@"struct";
     info.decls = &.{};
-    info.fields = info.fields ++ @typeInfo(B).Struct.fields;
-    return @Type(.{ .Struct = info });
+    info.fields = info.fields ++ @typeInfo(B).@"struct".fields;
+    return @Type(.{ .@"struct" = info });
 }
 
 test MergedStructs {
@@ -285,22 +285,22 @@ test MergedStructs {
             struct {
                 baz: u3,
             },
-        )).Struct,
+        )).@"struct",
         std.builtin.Type.Struct{
             .layout = .auto,
             .is_tuple = false,
             .decls = &.{},
             .fields = &.{
-                .{ .name = "foo", .type = u1, .default_value = null, .is_comptime = false, .alignment = @alignOf(u1) },
-                .{ .name = "bar", .type = u2, .default_value = null, .is_comptime = false, .alignment = @alignOf(u2) },
-                .{ .name = "baz", .type = u3, .default_value = null, .is_comptime = false, .alignment = @alignOf(u3) },
+                .{ .name = "foo", .type = u1, .default_value_ptr = null, .is_comptime = false, .alignment = @alignOf(u1) },
+                .{ .name = "bar", .type = u2, .default_value_ptr = null, .is_comptime = false, .alignment = @alignOf(u2) },
+                .{ .name = "baz", .type = u3, .default_value_ptr = null, .is_comptime = false, .alignment = @alignOf(u3) },
             },
         },
     );
 }
 
 pub fn SubStruct(comptime T: type, comptime fields: std.enums.EnumSet(std.meta.FieldEnum(T))) type {
-    var info = @typeInfo(T).Struct;
+    var info = @typeInfo(T).@"struct";
     info.decls = &.{};
     info.fields = &.{};
 
@@ -308,7 +308,7 @@ pub fn SubStruct(comptime T: type, comptime fields: std.enums.EnumSet(std.meta.F
     while (fields_iter.next()) |field|
         info.fields = info.fields ++ .{std.meta.fieldInfo(T, field)};
 
-    return @Type(.{ .Struct = info });
+    return @Type(.{ .@"struct" = info });
 }
 
 test SubStruct {
@@ -325,7 +325,7 @@ pub fn WithoutDecls(comptime T: type) type {
     var info = @typeInfo(T);
 
     switch (info) {
-        inline .Struct, .Enum, .Union => |*active_info| active_info.decls = &.{},
+        inline .@"struct", .@"enum", .@"union" => |*active_info| active_info.decls = &.{},
         inline else => |_, tag| @compileError(@tagName(tag) ++ " " ++ @typeName(T) ++ " cannot have declarations"),
     }
 
@@ -353,7 +353,7 @@ test FieldInfo {
 pub fn MapFields(comptime T: type, map: fn (FieldInfo(T)) FieldInfo(T)) type {
     var info = @typeInfo(T);
     switch (info) {
-        .ErrorSet => |*error_set| if (error_set.*) |errs| {
+        .error_set => |*error_set| if (error_set.*) |errs| {
             var new_errs: [errs.len]std.builtin.Type.Error = undefined;
             for (errs, &new_errs) |err, *new_err| new_err.* = map(err);
             error_set.* = &new_errs;
@@ -402,9 +402,9 @@ test MapFields {
 pub fn MapTaggedUnionFields(
     comptime T: type,
     map_field: fn (FieldInfo(T)) FieldInfo(T),
-    map_tag_field: fn (FieldInfo(@typeInfo(T).Union.tag_type.?)) FieldInfo(@typeInfo(T).Union.tag_type.?),
+    map_tag_field: fn (FieldInfo(@typeInfo(T).@"union".tag_type.?)) FieldInfo(@typeInfo(T).@"union".tag_type.?),
 ) type {
-    var info = @typeInfo(T).Union;
+    var info = @typeInfo(T).@"union";
 
     info.fields = &.{};
     for (std.meta.fields(T)) |field|
@@ -412,7 +412,7 @@ pub fn MapTaggedUnionFields(
 
     info.tag_type = MapFields(info.tag_type.?, map_tag_field);
 
-    return @Type(.{ .Union = info });
+    return @Type(.{ .@"union" = info });
 }
 
 test MapTaggedUnionFields {
@@ -425,7 +425,7 @@ test MapTaggedUnionFields {
             return f;
         }
 
-        fn mapTag(field: FieldInfo(@typeInfo(Foo).Union.tag_type.?)) FieldInfo(@typeInfo(Foo).Union.tag_type.?) {
+        fn mapTag(field: FieldInfo(@typeInfo(Foo).@"union".tag_type.?)) FieldInfo(@typeInfo(Foo).@"union".tag_type.?) {
             var f = field;
             f.name = "foo_" ++ f.name;
             return f;
@@ -444,9 +444,9 @@ test MapTaggedUnionFields {
 /// Raises the number of bits to the next power of two
 /// if it is not a power of two already.
 pub fn EnsurePowBits(comptime T: type, min: comptime_int) type {
-    var info = @typeInfo(T).Int;
+    var info = @typeInfo(T).int;
     info.bits = std.math.ceilPowerOfTwoAssert(@TypeOf(info.bits), @max(min, info.bits));
-    return @Type(.{ .Int = info });
+    return @Type(.{ .int = info });
 }
 
 test EnsurePowBits {
@@ -455,7 +455,7 @@ test EnsurePowBits {
 }
 
 pub fn ErrorSetExcluding(comptime ErrorSet: type, comptime errors: []const ErrorSet) type {
-    if (@typeInfo(ErrorSet).ErrorSet) |info| {
+    if (@typeInfo(ErrorSet).error_set) |info| {
         var new_info: []const std.builtin.Type.Error = &.{};
         errors: inline for (info) |err| {
             for (errors) |excluded_err|
@@ -463,7 +463,7 @@ pub fn ErrorSetExcluding(comptime ErrorSet: type, comptime errors: []const Error
                     continue :errors;
             new_info = new_info ++ .{err};
         }
-        return @Type(.{ .ErrorSet = new_info });
+        return @Type(.{ .error_set = new_info });
     } else if (errors.len != 0)
         @compileError("cannot exclude errors from an empty error set");
 }
@@ -479,12 +479,12 @@ test ErrorSetExcluding {
 }
 
 pub fn FnErrorSet(comptime Fn: type) type {
-    const info = @typeInfo(Fn).Fn;
+    const info = @typeInfo(Fn).@"fn";
     const ret = info.return_type.?;
     const ret_info = @typeInfo(ret);
     return switch (ret_info) {
-        .ErrorSet => ret,
-        .ErrorUnion => |error_union| error_union.error_set,
+        .error_set => ret,
+        .error_union => |error_union| error_union.error_set,
         else => @compileError(@typeName(Fn) ++ " does not return an error union or error set"),
     };
 }
@@ -495,7 +495,7 @@ test FnErrorSet {
 }
 
 pub fn FnErrorUnionPayload(comptime Fn: type) type {
-    return @typeInfo(@typeInfo(Fn).Fn.return_type.?).ErrorUnion.payload;
+    return @typeInfo(@typeInfo(Fn).@"fn".return_type.?).error_union.payload;
 }
 
 test FnErrorUnionPayload {
@@ -508,13 +508,13 @@ pub fn LikeReceiver(
     comptime T: type,
 ) type {
     const Method = @TypeOf(@field(ChildOrelseSelf(Object), @tagName(method)));
-    const Receiver = @typeInfo(Method).Fn.params[0].type.?;
+    const Receiver = @typeInfo(Method).@"fn".params[0].type.?;
     return switch (@typeInfo(Receiver)) {
-        .Pointer => |pointer| t_pointer: {
+        .pointer => |pointer| t_pointer: {
             var t_pointer = pointer;
             t_pointer.child = T;
             t_pointer.alignment = @alignOf(T);
-            break :t_pointer @Type(.{ .Pointer = t_pointer });
+            break :t_pointer @Type(.{ .pointer = t_pointer });
         },
         else => T,
     };
@@ -533,14 +533,14 @@ test LikeReceiver {
 }
 
 pub fn DropUfcsParam(comptime T: type) type {
-    var fn_info = @typeInfo(T).Fn;
+    var fn_info = @typeInfo(T).@"fn";
     fn_info.params = fn_info.params[1..];
-    return @Type(.{ .Fn = fn_info });
+    return @Type(.{ .@"fn" = fn_info });
 }
 
 /// Dynamic dispatch with a context pointer.
 pub fn Closure(comptime Func: type) type {
-    const func_info = @typeInfo(Func).Fn;
+    const func_info = @typeInfo(Func).@"fn";
     return struct {
         context: *const anyopaque,
         func: *const FnWithContext(*const anyopaque),
@@ -548,9 +548,9 @@ pub fn Closure(comptime Func: type) type {
         pub const Fn = Func;
 
         fn FnWithContext(Context: type) type {
-            return @Type(.{ .Fn = blk: {
+            return @Type(.{ .@"fn" = blk: {
                 var info = func_info;
-                info.params = .{.{
+                info.params = .{std.builtin.Type.Fn.Param{
                     .type = Context,
                     .is_generic = false,
                     .is_noalias = false,
@@ -560,7 +560,7 @@ pub fn Closure(comptime Func: type) type {
         }
 
         pub fn init(context: anytype, func: FnWithContext(@TypeOf(context))) @This() {
-            if (@typeInfo(@TypeOf(context)) != .Pointer)
+            if (@typeInfo(@TypeOf(context)) != .pointer)
                 @compileError("context must be a pointer");
 
             return .{
@@ -624,7 +624,7 @@ pub const IfaceCtx = enum {
     ) self.Type(ChildOrelseSelf(@TypeOf(ctx))) {
         return switch (self) {
             .ptr, .const_ptr => ctx,
-            .copy => if (@typeInfo(@TypeOf(ctx)) == .Pointer) ctx.* else ctx,
+            .copy => if (@typeInfo(@TypeOf(ctx)) == .pointer) ctx.* else ctx,
         };
     }
 };

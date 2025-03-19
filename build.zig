@@ -40,7 +40,6 @@ pub fn build(b: *Build) !void {
         .optimize = options.optimize,
         .imports = &.{
             .{ .name = "build_options", .module = options_mod },
-            .{ .name = "trait", .module = b.dependency("trait", options.common()).module("zigtrait") },
         },
     });
     if (options.zqlite)
@@ -48,8 +47,8 @@ pub fn build(b: *Build) !void {
 
     const test_step = b.step("test", "Run unit tests");
     {
-        const utils_mod_test = utils.addModuleTest(b, utils_mod, .{});
-        linkSystemLibraries(&utils_mod_test.root_module, options);
+        const utils_mod_test = b.addTest(.{ .root_module = utils_mod });
+        linkSystemLibraries(utils_mod_test.root_module, options);
         utils_mod_test.root_module.addImport("build_options", options_mod);
 
         const run_utils_mod_test = b.addRunArtifact(utils_mod_test);
@@ -67,40 +66,6 @@ fn linkSystemLibraries(module: *Build.Module, options: Options) void {
 }
 
 pub const utils = struct {
-    pub const ModuleTestOptions = meta.SubStruct(Build.TestOptions, fields: {
-        var fields = std.enums.EnumSet(std.meta.FieldEnum(Build.TestOptions)).initFull();
-        fields.remove(.root_source_file);
-        fields.remove(.optimize);
-        fields.remove(.target);
-        break :fields fields;
-    });
-
-    pub fn addModuleTest(
-        b: *Build,
-        module: *const Build.Module,
-        options: ModuleTestOptions,
-    ) *Build.Step.Compile {
-        var test_options = Build.TestOptions{
-            .root_source_file = module.root_source_file.?,
-        };
-        inline for (@typeInfo(ModuleTestOptions).Struct.fields) |field|
-            @field(test_options, field.name) = @field(options, field.name);
-        if (module.optimize) |optimize|
-            test_options.optimize = optimize;
-        if (module.resolved_target) |target|
-            test_options.target = target;
-
-        const module_test = b.addTest(test_options);
-
-        {
-            var module_import_iter = module.import_table.iterator();
-            while (module_import_iter.next()) |import|
-                module_test.root_module.addImport(import.key_ptr.*, import.value_ptr.*);
-        }
-
-        return module_test;
-    }
-
     pub fn addCheckTls(b: *Build) *Build.Step {
         const check_step = b.step("check", "Check compilation for errors");
 
@@ -162,7 +127,7 @@ pub const utils = struct {
             return self;
         }
 
-        fn make(step: *Build.Step, progress_node: std.Progress.Node) !void {
+        fn make(step: *Build.Step, options: Build.Step.MakeOptions) !void {
             const self: *@This() = @fieldParentPtr("step", step);
             const src_dir_path = self.inner.options.source_dir.getPath2(step.owner, step);
 
@@ -171,7 +136,7 @@ pub const utils = struct {
                 else => err,
             };
 
-            try self.inner.step.makeFn(&self.inner.step, progress_node);
+            try self.inner.step.makeFn(&self.inner.step, options);
             step.result_cached = self.inner.step.result_cached;
         }
     };

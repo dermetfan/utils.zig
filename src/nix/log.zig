@@ -173,7 +173,7 @@ pub const Action = union(enum) {
                 try write_stream.objectField("id");
                 try write_stream.write(id);
             },
-            inline else => |action| inline for (@typeInfo(@TypeOf(action)).Struct.fields) |field| {
+            inline else => |action| inline for (@typeInfo(@TypeOf(action)).@"struct".fields) |field| {
                 try write_stream.objectField(field.name);
                 try write_stream.write(@field(action, field.name));
             },
@@ -384,12 +384,12 @@ test LogStream {
         \\# decline
         \\# decline-permanently
         \\
-    ++ prefix ++
+        ++ prefix ++
         \\{"foo": 2}
         \\# accept
         \\dummy://
         \\
-    ;
+        ;
     var input_stream = std.io.fixedBufferStream(input_buf);
 
     var discard_buf: [input_buf.len]u8 = undefined;

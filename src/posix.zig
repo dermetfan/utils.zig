@@ -209,40 +209,41 @@ pub const ProxyDuplexControl = struct {
     };
 };
 
-pub fn proxyDuplex(
-    allocator: std.mem.Allocator,
-    // These cannot be comptime fields of `options`
-    // as when the caller tries to change them from their defaults
-    // we hit https://github.com/ziglang/zig/issues/19985.
-    comptime comptime_options: struct {
+pub const ProxyDuplexOptions = struct {
+    /// Will return `.canceled` when this file descriptor
+    /// is ready for reading, ready for writing,
+    /// or, if it is the read end of a pipe,
+    /// when the write end of the pipe is closed.
+    ///
+    /// We have this in addition to `control`
+    /// because that allows the caller to reuse
+    /// the same pipe for many things at once,
+    /// which `control` does not support.
+    cancel: ?posix.fd_t = null,
+    /// The same instance can be used for multiple concurrent calls.
+    control: ?*ProxyDuplexControl = null,
+    /// Behaves according to `fifo_max_size_behavior`
+    /// if a read would cause the buffer size to exceed this.
+    /// Note there are two buffers that may grow up to this size, one for each direction.
+    fifo_max_size: ?usize = mem.b_per_mib,
+    fifo_max_size_behavior: enum { block, oom } = .oom,
+    /// Will shrink the buffer back down to this size if possible.
+    fifo_desired_size: ?usize = 512 * mem.b_per_kib,
+
+    pub const ComptimeOptions = struct {
         downstream_kind: FileHandleType = .fd,
         upstream_kind: FileHandleType = .fd,
         /// Read/write buffer size on the stack.
         buf_size: usize = 4 * mem.b_per_kib,
-    },
+    };
+};
+
+pub fn proxyDuplex(
+    allocator: std.mem.Allocator,
+    comptime comptime_options: ProxyDuplexOptions.ComptimeOptions,
     downstream: comptime_options.downstream_kind.type(),
     upstream: comptime_options.upstream_kind.type(),
-    options: struct {
-        /// Will return `.canceled` when this file descriptor
-        /// is ready for reading, ready for writing,
-        /// or, if it is the read end of a pipe,
-        /// when the write end of the pipe is closed.
-        ///
-        /// We have this in addition to `control`
-        /// because that allows the caller to reuse
-        /// the same pipe for many things at once,
-        /// which `control` does not support.
-        cancel: ?posix.fd_t = null,
-        /// The same instance can be used for multiple concurrent calls.
-        control: ?*ProxyDuplexControl = null,
-        /// Behaves according to `fifo_max_size_behavior`
-        /// if a read would cause the buffer size to exceed this.
-        /// Note there are two buffers that may grow up to this size, one for each direction.
-        fifo_max_size: ?usize = mem.b_per_mib,
-        fifo_max_size_behavior: enum { block, oom } = .oom,
-        /// Will shrink the buffer back down to this size if possible.
-        fifo_desired_size: ?usize = 512 * mem.b_per_kib,
-    },
+    options: ProxyDuplexOptions,
 ) !ProxyDuplexFinish {
     // If the `buf_size` is as large as the `fifo_max_size`
     // we may unset both `POLL.IN` and `POLL.OUT` from `posix.pollfd.events`

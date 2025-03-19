@@ -1,6 +1,5 @@
 const root = @import("root");
 const std = @import("std");
-const trait = @import("trait");
 const zqlite = @import("zqlite");
 
 const fmt = @import("fmt.zig");
@@ -119,7 +118,7 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type,
 
                 [*:0]const u8 => zqlite.Row.textZ,
                 ?[*:0]const u8 => zqlite.Row.nullableTextZ,
-                usize => zqlite.Row.textLen,
+                usize => zqlite.Row.columnBytes,
 
                 zqlite.Blob => zqlite.Row.blob,
                 ?zqlite.Blob => zqlite.Row.nullableBlob,
@@ -251,13 +250,13 @@ test Query {
     {
         const Row = struct {};
         const Q = Query("", false, Row, struct {});
-        try std.testing.expectEqualDeep(@typeInfo(@typeInfo(@typeInfo(@TypeOf(Q.query)).Fn.return_type.?).ErrorUnion.payload), @typeInfo(?Row));
+        try std.testing.expectEqualDeep(@typeInfo(@typeInfo(@typeInfo(@TypeOf(Q.query)).@"fn".return_type.?).error_union.payload), @typeInfo(?Row));
     }
 
     {
         const Row = struct {};
         const Q = Query("", true, Row, struct {});
-        try std.testing.expectEqualDeep(@typeInfo(std.meta.Elem(@typeInfo(@typeInfo(@TypeOf(Q.query)).Fn.return_type.?).ErrorUnion.payload)), @typeInfo(Row));
+        try std.testing.expectEqualDeep(@typeInfo(std.meta.Elem(@typeInfo(@typeInfo(@TypeOf(Q.query)).@"fn".return_type.?).error_union.payload)), @typeInfo(Row));
     }
 }
 
@@ -267,7 +266,7 @@ pub fn Exec(comptime sql: []const u8, comptime Values_: type) type {
     return struct {
         pub const Values = Q.Values;
 
-        pub usingnamespace if (@typeInfo(Values).Struct.fields.len == 0) struct {
+        pub usingnamespace if (@typeInfo(Values).@"struct".fields.len == 0) struct {
             pub fn execNoArgs(conn: zqlite.Conn) !void {
                 return logErr(conn, .execNoArgs, .{sql});
             }
@@ -308,8 +307,7 @@ pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
 pub fn columnList(comptime table: ?[]const u8, comptime columns: anytype) []const u8 {
     comptime var selects: [columns.len][]const u8 = undefined;
     inline for (columns, &selects) |column, *select| {
-        const column_name = if (trait.isZigString(@TypeOf(column))) column else @tagName(column);
-        select.* = "\"" ++ column_name ++ "\"";
+        select.* = "\"" ++ @tagName(column) ++ "\"";
         if (table) |t| select.* = "\"" ++ t ++ "\"." ++ select.*;
     }
     return comptime mem.comptimeJoin(&selects, ", ");
@@ -325,7 +323,6 @@ test columnList {
             \\"a"."foo", "a"."bar", "a"."baz"
         ;
         try std.testing.expectEqualStrings(expected, columnList("a", .{ .foo, .bar, .baz }));
-        try std.testing.expectEqualStrings(expected, columnList("a", .{ "foo", "bar", "baz" }));
     }
 }
 

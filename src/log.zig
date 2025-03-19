@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn scoped(comptime new_scope: @Type(.EnumLiteral)) type {
+pub fn scoped(comptime new_scope: @Type(.enum_literal)) type {
     return struct {
         pub const scope = new_scope;
 

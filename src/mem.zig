@@ -1,5 +1,4 @@
 const std = @import("std");
-const trait = @import("trait");
 
 // Divisions of a byte.
 pub const b_per_kib = 1024;
@@ -62,13 +61,22 @@ test capConst {
 }
 
 pub fn AnyAsBytesUnpad(Any: type) type {
-    return if (trait.ptrQualifiedWith(.@"const")(Any)) []const u8 else []u8;
+    return if (switch (@typeInfo(Any)) {
+        .pointer => |pointer| pointer.is_const,
+        else => false,
+    }) []const u8 else []u8;
 }
 
 pub fn anyAsBytesUnpad(any: anytype) AnyAsBytesUnpad(@TypeOf(any)) {
     const Any = @TypeOf(any);
-    if (comptime trait.is(.Null)(Any) or trait.is(.Void)(Any)) return &.{};
-    const bytes = if (comptime trait.ptrOfSize(.Slice)(Any)) std.mem.sliceAsBytes(any) else std.mem.asBytes(any);
+    if (comptime switch (@typeInfo(Any)) {
+        .null, .void => true,
+        else => false,
+    }) return &.{};
+    const bytes = if (comptime switch (@typeInfo(Any)) {
+        .pointer => |pointer| pointer.size == .slice,
+        else => false,
+    }) std.mem.sliceAsBytes(any) else std.mem.asBytes(any);
     return bytes[0 .. bytes.len - paddingOf(std.meta.Child(Any))];
 }
 

@@ -22,7 +22,7 @@ pub fn padding(len: usize) std.math.IntFittingRange(0, block_len) {
 }
 
 test padding {
-    const Padding = @typeInfo(@TypeOf(padding)).Fn.return_type.?;
+    const Padding = @typeInfo(@TypeOf(padding)).@"fn".return_type.?;
     try std.testing.expectEqual(@as(Padding, 0), padding(0));
     try std.testing.expectEqual(@as(Padding, 3), padding(5));
     try std.testing.expectEqual(@as(Padding, 0), padding(24));
@@ -169,7 +169,7 @@ pub fn writeStringStringMap(writer: anytype, map: std.StringHashMapUnmanaged([]c
 pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytype) (ReadError(@TypeOf(reader), true) || error{BadBool})!T {
     var strukt: T = undefined;
 
-    const fields = @typeInfo(T).Struct.fields;
+    const fields = @typeInfo(T).@"struct".fields;
     inline for (fields, 0..) |field, field_idx| {
         @field(strukt, field.name) = switch (field.type) {
             []const u8 => readPacket(allocator, reader),
@@ -204,7 +204,7 @@ pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytyp
 }
 
 pub fn writeStruct(comptime T: type, writer: anytype, value: T) (@TypeOf(writer).Error || error{BadBool})!void {
-    const fields = @typeInfo(T).Struct.fields;
+    const fields = @typeInfo(T).@"struct".fields;
     inline for (fields) |field| {
         const field_value = @field(value, field.name);
         try switch (field.type) {
