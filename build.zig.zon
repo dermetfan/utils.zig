@@ -1,14 +1,12 @@
 .{
-    .name = "utils",
+    .name = .utils,
     .version = "0.0.0",
+    .fingerprint = 0x540f5beb0f6592e4,
+    .minimum_zig_version = "0.14.0",
     .dependencies = .{
-        .trait = .{
-            .url = "https://github.com/wrongnull/zigtrait/archive/4b431169c9226b3fe2bbba89f451e5c8bca4c5a3.tar.gz",
-            .hash = "12208d1a1be506a77528120e9a485ba9d610f435d601b897eb5bfd9a3596d2e740a4",
-        },
         .zqlite = .{
-            .url = "https://github.com/karlseguin/zqlite.zig/archive/997d3ac5156bcc9990168ad92caec6ed0cd5cbd8.tar.gz",
-            .hash = "1220321cdb273d1f6e90b04fc747cae49dac1ae3d7db4125f590d2c0df5c4aadcc88",
+            .url = "https://github.com/karlseguin/zqlite.zig/archive/d146898482a4c4bdcba487496f67a24afa12894d.tar.gz",
+            .hash = "zqlite-0.0.0-RWLaYxp7lQBh-o0STqzS1uZZb0tLTCGBDgzpG_dGjd2J",
             .lazy = true,
         },
     },

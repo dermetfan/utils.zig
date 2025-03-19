@@ -1,6 +1,5 @@
 const root = @import("root");
 const std = @import("std");
-const trait = @import("trait");
 const zqlite = @import("zqlite");
 
 const fmt = @import("fmt.zig");
@@ -23,8 +22,8 @@ pub const log = std.log.scoped(options.log_scope);
 
 pub fn logErr(conn: zqlite.Conn, comptime func_name: std.meta.DeclEnum(zqlite.Conn), args: anytype) zqlite.Error!(blk: {
     const func = @field(zqlite.Conn, @tagName(func_name));
-    const func_info = @typeInfo(@TypeOf(func)).Fn;
-    break :blk @typeInfo(func_info.return_type.?).ErrorUnion.payload;
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
+    break :blk @typeInfo(func_info.return_type.?).error_union.payload;
 }) {
     const func = @field(zqlite.Conn, @tagName(func_name));
     return if (@call(.auto, func, .{conn} ++ args)) |result| result else |err| err: {
@@ -119,7 +118,7 @@ pub fn Query(comptime sql: []const u8, comptime multi: bool, comptime Row: type,
 
                 [*:0]const u8 => zqlite.Row.textZ,
                 ?[*:0]const u8 => zqlite.Row.nullableTextZ,
-                usize => zqlite.Row.textLen,
+                usize => zqlite.Row.columnBytes,
 
                 zqlite.Blob => zqlite.Row.blob,
                 ?zqlite.Blob => zqlite.Row.nullableBlob,
@@ -251,13 +250,13 @@ test Query {
     {
         const Row = struct {};
         const Q = Query("", false, Row, struct {});
-        try std.testing.expectEqualDeep(@typeInfo(@typeInfo(@typeInfo(@TypeOf(Q.query)).Fn.return_type.?).ErrorUnion.payload), @typeInfo(?Row));
+        try std.testing.expectEqualDeep(@typeInfo(@typeInfo(@typeInfo(@TypeOf(Q.query)).@"fn".return_type.?).error_union.payload), @typeInfo(?Row));
     }
 
     {
         const Row = struct {};
         const Q = Query("", true, Row, struct {});
-        try std.testing.expectEqualDeep(@typeInfo(std.meta.Elem(@typeInfo(@typeInfo(@TypeOf(Q.query)).Fn.return_type.?).ErrorUnion.payload)), @typeInfo(Row));
+        try std.testing.expectEqualDeep(@typeInfo(std.meta.Elem(@typeInfo(@typeInfo(@TypeOf(Q.query)).@"fn".return_type.?).error_union.payload)), @typeInfo(Row));
     }
 }
 
@@ -267,7 +266,7 @@ pub fn Exec(comptime sql: []const u8, comptime Values_: type) type {
     return struct {
         pub const Values = Q.Values;
 
-        pub usingnamespace if (@typeInfo(Values).Struct.fields.len == 0) struct {
+        pub usingnamespace if (@typeInfo(Values).@"struct".fields.len == 0) struct {
             pub fn execNoArgs(conn: zqlite.Conn) !void {
                 return logErr(conn, .execNoArgs, .{sql});
             }
@@ -298,7 +297,7 @@ pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
         \\INSERT INTO "
     ++ table ++
         \\" (
-    ++ columnList(null, std.meta.fieldNames(Column)) ++
+    ++ columnList(null, std.enums.values(std.meta.FieldEnum(Column))) ++
         \\) VALUES (
     ++ "?, " ** (std.meta.fields(Column).len - 1) ++ "?" ++
         \\)
@@ -308,8 +307,7 @@ pub fn SimpleInsert(comptime table: []const u8, comptime Column: type) type {
 pub fn columnList(comptime table: ?[]const u8, comptime columns: anytype) []const u8 {
     comptime var selects: [columns.len][]const u8 = undefined;
     inline for (columns, &selects) |column, *select| {
-        const column_name = if (trait.isZigString(@TypeOf(column))) column else @tagName(column);
-        select.* = "\"" ++ column_name ++ "\"";
+        select.* = "\"" ++ @tagName(column) ++ "\"";
         if (table) |t| select.* = "\"" ++ t ++ "\"." ++ select.*;
     }
     return comptime mem.comptimeJoin(&selects, ", ");
@@ -325,7 +323,6 @@ test columnList {
             \\"a"."foo", "a"."bar", "a"."baz"
         ;
         try std.testing.expectEqualStrings(expected, columnList("a", .{ .foo, .bar, .baz }));
-        try std.testing.expectEqualStrings(expected, columnList("a", .{ "foo", "bar", "baz" }));
     }
 }
 
@@ -355,8 +352,8 @@ pub fn structFromRow(
 
         fn clone(self: *@This(), comptime T: type, value: anytype) std.mem.Allocator.Error!T {
             return switch (@typeInfo(T)) {
-                .Pointer => |pointer| pointer: {
-                    const cloned = if (pointer.sentinel == null) blk: {
+                .pointer => |pointer| pointer: {
+                    const cloned = if (pointer.sentinel_ptr == null) blk: {
                         const slice = try self.allocator.dupe(pointer.child, value);
                         self.allocated_mem[self.allocated] = slice;
                         self.allocated += 1;
@@ -369,13 +366,13 @@ pub fn structFromRow(
                     };
 
                     break :pointer switch (pointer.size) {
-                        .Slice => cloned,
-                        .Many => cloned.ptr,
+                        .slice => cloned,
+                        .many => cloned.ptr,
                         else => @compileError("unsupported pointer size"),
                     };
                 },
 
-                .Optional => |optional| if (value) |v| try self.clone(optional.child, v) else null,
+                .optional => |optional| if (value) |v| try self.clone(optional.child, v) else null,
 
                 else => switch (T) {
                     zqlite.Blob => .{ .value = try self.clone(std.meta.FieldType(T, .value), value) },
@@ -402,16 +399,16 @@ pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: 
             const Value = @TypeOf(value);
 
             switch (@typeInfo(Value)) {
-                .Pointer => |pointer| alloc.free(switch (pointer.size) {
-                    .Slice => value,
-                    .Many => if (pointer.sentinel != null)
+                .pointer => |pointer| alloc.free(switch (pointer.size) {
+                    .slice => value,
+                    .many => if (pointer.sentinel_ptr != null)
                         std.mem.span(value)
                     else
                         @compileError("many-item pointers only supported with sentinel"),
                     else => @compileError("unsupported pointer size"),
                 }),
 
-                .Optional => if (value) |v| free(alloc, v),
+                .optional => if (value) |v| free(alloc, v),
 
                 else => switch (Value) {
                     zqlite.Blob => alloc.free(value.value),
@@ -421,7 +418,7 @@ pub fn freeStructFromRow(comptime Row: type, allocator: std.mem.Allocator, row: 
         }
     }.free;
 
-    inline for (@typeInfo(Row).Struct.fields) |field| {
+    inline for (@typeInfo(Row).@"struct".fields) |field| {
         const field_value = @field(row, field.name);
 
         free(allocator, field_value);

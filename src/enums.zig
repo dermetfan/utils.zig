@@ -12,7 +12,7 @@ pub fn Merged(comptime enums: []const type, comptime reindex: bool) type {
     var is_exhaustive = true;
 
     for (enums) |e| {
-        const info = @typeInfo(e).Enum;
+        const info = @typeInfo(e).@"enum";
 
         for (info.fields) |field| {
             var new_field = field;
@@ -25,7 +25,7 @@ pub fn Merged(comptime enums: []const type, comptime reindex: bool) type {
         if (!info.is_exhaustive) is_exhaustive = false;
 
         {
-            const tag_info = @typeInfo(info.tag_type).Int;
+            const tag_info = @typeInfo(info.tag_type).int;
 
             switch (tag_info.signedness) {
                 .signed => |s| tag_int.signedness = s,
@@ -33,17 +33,17 @@ pub fn Merged(comptime enums: []const type, comptime reindex: bool) type {
             }
 
             if (reindex)
-                tag_int = @typeInfo(std.math.IntFittingRange(0, fields.len - 1)).Int
+                tag_int = @typeInfo(std.math.IntFittingRange(0, fields.len - 1)).int
             else
                 tag_int.bits = @max(tag_int.bits, tag_info.bits);
         }
     }
 
-    const tag_type = @Type(.{ .Int = tag_int });
+    const tag_type = @Type(.{ .int = tag_int });
 
     if (!is_exhaustive and std.math.pow(tag_type, 2, tag_int.bits) == fields.len) is_exhaustive = true;
 
-    return @Type(.{ .Enum = .{
+    return @Type(.{ .@"enum" = .{
         .tag_type = tag_type,
         .is_exhaustive = is_exhaustive,
         .fields = fields,
@@ -57,7 +57,7 @@ test Merged {
             enum { a, b },
             enum(u3) { c = 2, d, e, f },
         }, false);
-        const info = @typeInfo(E).Enum;
+        const info = @typeInfo(E).@"enum";
         try std.testing.expectEqual(u3, info.tag_type);
         try std.testing.expectEqual(6, info.fields.len);
     }
@@ -67,20 +67,20 @@ test Merged {
             enum { a, b },
             enum(u3) { c, d, e, f },
         }, true);
-        const info = @typeInfo(E).Enum;
+        const info = @typeInfo(E).@"enum";
         try std.testing.expectEqual(u3, info.tag_type);
         try std.testing.expectEqual(6, info.fields.len);
     }
 }
 
 pub fn Sub(comptime Enum: type, comptime tags: []const Enum) type {
-    var info = @typeInfo(Enum).Enum;
+    var info = @typeInfo(Enum).@"enum";
     info.fields = &.{};
-    inline for (tags) |tag| info.fields = info.fields ++ .{.{
+    inline for (tags) |tag| info.fields = info.fields ++ .{std.builtin.Type.EnumField{
         .name = @tagName(tag),
         .value = @intFromEnum(tag),
     }};
-    return @Type(.{ .Enum = info });
+    return @Type(.{ .@"enum" = info });
 }
 
 test Sub {
@@ -97,9 +97,9 @@ test Sub {
 /// Raises the tag type to the next power of two
 /// if it is not a power of two already.
 pub fn EnsurePowTag(comptime E: type, min: comptime_int) type {
-    var info = @typeInfo(E).Enum;
+    var info = @typeInfo(E).@"enum";
     info.tag_type = meta.EnsurePowBits(info.tag_type, min);
-    return @Type(.{ .Enum = info });
+    return @Type(.{ .@"enum" = info });
 }
 
 test EnsurePowTag {

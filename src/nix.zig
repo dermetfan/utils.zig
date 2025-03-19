@@ -18,7 +18,7 @@ pub const Options = struct {
     log_scope: @TypeOf(.EnumLiteral) = .@"utils/nix",
     runFn: @TypeOf(defaultRunFn) = defaultRunFn,
 
-    const RunArgs = @typeInfo(@TypeOf(std.process.Child.run)).Fn.params[0].type.?;
+    const RunArgs = @typeInfo(@TypeOf(std.process.Child.run)).@"fn".params[0].type.?;
 
     /// Only has the fields that are actually needed
     /// so that an implementation that supports only these can be supplied.
@@ -490,8 +490,8 @@ pub const Config = struct {
 
                     break :alias option_object;
                 }
-            } else if (field.default_value) |default_value| {
-                @field(self, field.name) = @as(*align(1) const field.type, @ptrCast(default_value)).*;
+            } else if (field.defaultValue()) |default_value| {
+                @field(self, field.name) = default_value;
                 comptime continue;
             } else return error.MissingField;
 
@@ -1020,8 +1020,8 @@ pub const FlakeMetadata = struct {
             inline while (comptime fields_iter.next()) |field| {
                 const value = @field(strukt, @tagName(field));
 
-                if (std.meta.fieldInfo(@TypeOf(strukt), field).default_value) |default_value|
-                    if (isDefaultFlakeUrlQueryParam(value, default_value)) comptime continue;
+                if (std.meta.fieldInfo(@TypeOf(strukt), field).defaultValue()) |default_value|
+                    if (eqlFlakeUrlQueryParam(value, default_value)) comptime continue;
 
                 if (try stringifyFlakeUrlQueryParam(arena, value)) |v|
                     try map.put(@tagName(field), v);
@@ -1030,20 +1030,10 @@ pub const FlakeMetadata = struct {
             return map;
         }
 
-        fn isDefaultFlakeUrlQueryParam(value: anytype, default: ?*const anyopaque) bool {
-            return eqlFlakeUrlQueryParam(
-                value,
-                @as(
-                    *const @TypeOf(value),
-                    @alignCast(@ptrCast(default)),
-                ).*,
-            );
-        }
-
         fn eqlFlakeUrlQueryParam(a: anytype, b: @TypeOf(a)) bool {
             const A = @TypeOf(a);
             const a_child, const b_child = switch (@typeInfo(A)) {
-                .Optional => optional: {
+                .optional => optional: {
                     if (a == null and b == null) return true;
                     if ((a == null) != (b == null)) return false;
                     break :optional .{ a.?, b.? };
@@ -1061,7 +1051,7 @@ pub const FlakeMetadata = struct {
         fn stringifyFlakeUrlQueryParam(allocator: std.mem.Allocator, param: anytype) std.mem.Allocator.Error!?[]const u8 {
             const Param = @TypeOf(param);
             const param_child = switch (@typeInfo(Param)) {
-                .Optional => if (param) |p| p else return null,
+                .optional => if (param) |p| p else return null,
                 else => param,
             };
             return switch (@TypeOf(param_child)) {
@@ -1178,7 +1168,7 @@ pub const FlakeMetadata = struct {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
 
-            const write_to_stream_options = .{
+            const write_to_stream_options = std.Uri.WriteToStreamOptions{
                 .scheme = true,
                 .authentication = true,
                 .authority = true,
@@ -1351,7 +1341,7 @@ pub fn flakeMetadata(
     }
     defer allocator.free(result.stderr);
 
-    const json_options = .{ .ignore_unknown_fields = true };
+    const json_options = std.json.ParseOptions{ .ignore_unknown_fields = true };
 
     const json = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, json_options);
     defer json.deinit();
@@ -1406,7 +1396,7 @@ pub fn flakeMetadataLocks(
     }
     defer allocator.free(result.stderr);
 
-    const json_options = .{ .ignore_unknown_fields = true };
+    const json_options = std.json.ParseOptions{ .ignore_unknown_fields = true };
 
     const json = json: {
         const flake_lock = flake_lock: {

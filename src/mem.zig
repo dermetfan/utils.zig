@@ -1,5 +1,4 @@
 const std = @import("std");
-const trait = @import("trait");
 
 // Divisions of a byte.
 pub const b_per_kib = 1024;
@@ -62,13 +61,22 @@ test capConst {
 }
 
 pub fn AnyAsBytesUnpad(Any: type) type {
-    return if (trait.ptrQualifiedWith(.@"const")(Any)) []const u8 else []u8;
+    return if (switch (@typeInfo(Any)) {
+        .pointer => |pointer| pointer.is_const,
+        else => false,
+    }) []const u8 else []u8;
 }
 
 pub fn anyAsBytesUnpad(any: anytype) AnyAsBytesUnpad(@TypeOf(any)) {
     const Any = @TypeOf(any);
-    if (comptime trait.is(.Null)(Any) or trait.is(.Void)(Any)) return &.{};
-    const bytes = if (comptime trait.ptrOfSize(.Slice)(Any)) std.mem.sliceAsBytes(any) else std.mem.asBytes(any);
+    if (comptime switch (@typeInfo(Any)) {
+        .null, .void => true,
+        else => false,
+    }) return &.{};
+    const bytes = if (comptime switch (@typeInfo(Any)) {
+        .pointer => |pointer| pointer.size == .slice,
+        else => false,
+    }) std.mem.sliceAsBytes(any) else std.mem.asBytes(any);
     return bytes[0 .. bytes.len - paddingOf(std.meta.Child(Any))];
 }
 
@@ -183,35 +191,35 @@ pub fn clone(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error
 pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error!@TypeOf(obj) {
     const Obj = @TypeOf(obj);
     switch (@typeInfo(Obj)) {
-        .Pointer => |pointer| switch (pointer.size) {
-            .One, .C => {
+        .pointer => |pointer| switch (pointer.size) {
+            .one, .c => {
                 const ptr = try allocator.create(pointer.child);
                 ptr.* = try cloneLeaky(allocator, obj.*);
                 return ptr;
             },
-            .Slice => {
+            .slice => {
                 const slice = try allocator.alloc(pointer.child, obj.len);
                 for (slice, obj) |*dst, src|
                     dst.* = try cloneLeaky(allocator, src);
                 return slice;
             },
-            .Many => @compileError("cannot clone many-item pointer"),
+            .many => @compileError("cannot clone many-item pointer"),
         },
-        .Array => {
+        .array => {
             const array: Obj = undefined;
             for (&array, obj) |*dst, src|
                 dst.* = try cloneLeaky(allocator, src);
             return array;
         },
-        .Optional => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
-        .Int, .Float, .Vector, .Enum, .Bool => return obj,
-        .Union => {
+        .optional => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
+        .int, .float, .vector, .@"enum", .bool => return obj,
+        .@"union" => {
             const active_tag = std.meta.activeTag(obj);
             const active_tag_name = @tagName(active_tag);
             const active = @field(obj, active_tag_name);
             return @unionInit(Obj, active_tag_name, try cloneLeaky(allocator, active));
         },
-        .Struct => |strukt| {
+        .@"struct" => |strukt| {
             var cloned: Obj = undefined;
             inline for (strukt.fields) |field|
                 @field(cloned, field.name) = try cloneLeaky(allocator, @field(obj, field.name));
