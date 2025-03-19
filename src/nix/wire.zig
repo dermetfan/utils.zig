@@ -181,10 +181,10 @@ pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytyp
                 map.hash_map.unmanaged
             else |err|
                 err,
-            else => @compileError("type \"" ++ @typeName(T) ++ "\" does not exist in the nix protocol"),
+            else => @compileError("type \"" ++ @typeName(field.type) ++ "\" does not exist in the nix protocol"),
         } catch |err| {
             inline for (fields[0..field_idx]) |field_| {
-                const field_value = @field(strukt, field.name);
+                const field_value = @field(strukt, field_.name);
                 switch (field_.type) {
                     []const u8 => allocator.free(field_value),
                     []const []const u8 => for (field_value) |item| allocator.free(item),
@@ -203,6 +203,25 @@ pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytyp
     return strukt;
 }
 
+test readStruct {
+    var serialized = std.io.fixedBufferStream(&TestStruct.default_serialized);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var test_struct = try readStruct(TestStruct, arena.allocator(), serialized.reader());
+    defer test_struct.deinit();
+
+    var expected = try TestStruct.default(std.testing.allocator);
+    defer expected.deinit();
+
+    try std.testing.expectEqual(expected.bar, test_struct.bar);
+    try std.testing.expectEqualStrings(expected.baz, test_struct.baz);
+    try std.testing.expectEqual(expected.qux, test_struct.qux);
+    try std.testing.expectEqual(expected.foobar.count(), test_struct.foobar.count());
+    try std.testing.expectEqualStrings(expected.foobar.get("foo").?, test_struct.foobar.get("foo").?);
+}
+
 pub fn writeStruct(comptime T: type, writer: anytype, value: T) (@TypeOf(writer).Error || error{BadBool})!void {
     const fields = @typeInfo(T).@"struct".fields;
     inline for (fields) |field| {
@@ -212,15 +231,66 @@ pub fn writeStruct(comptime T: type, writer: anytype, value: T) (@TypeOf(writer)
             []const []const u8 => writePackets(writer, field_value),
             u64 => writeU64(writer, field_value),
             bool => writeBool(writer, field_value),
-            std.BufMap => writeStringStringMap(writer, field_value),
+            std.BufMap => writeStringStringMap(writer, field_value.hash_map.unmanaged),
             std.StringHashMapUnmanaged([]const u8) => if (writeStringStringMap(writer, field_value)) |map|
                 map.hash_map.unmanaged
             else |err|
                 err,
-            else => @compileError("type \"" ++ @typeName(T) ++ "\" does not exist in the nix protocol"),
+            else => @compileError("type \"" ++ @typeName(field.type) ++ "\" does not exist in the nix protocol"),
         };
     }
 }
+
+test writeStruct {
+    var test_struct = try TestStruct.default(std.testing.allocator);
+    defer test_struct.deinit();
+
+    var serialized = std.ArrayListUnmanaged(u8){};
+    defer serialized.deinit(std.testing.allocator);
+
+    try writeStruct(TestStruct, serialized.writer(std.testing.allocator), test_struct);
+
+    try std.testing.expectEqualSlices(u8, &TestStruct.default_serialized, serialized.items);
+}
+
+const TestStruct = struct {
+    bar: u64,
+    baz: []const u8,
+    baaz: []const []const u8,
+    qux: bool,
+    foobar: std.BufMap,
+
+    pub const default_serialized = [_]u8{
+        0x2A, 0,    0,    0, 0, 0, 0, 0, 0x03, 0,    0,    0, 0, 0, 0, 0,
+        0x62, 0x61, 0x7A, 0, 0, 0, 0, 0, 0x03, 0,    0,    0, 0, 0, 0, 0,
+        0x01, 0,    0,    0, 0, 0, 0, 0, 0x61, 0,    0,    0, 0, 0, 0, 0,
+        0x01, 0,    0,    0, 0, 0, 0, 0, 0x62, 0,    0,    0, 0, 0, 0, 0,
+        0x01, 0,    0,    0, 0, 0, 0, 0, 0x63, 0,    0,    0, 0, 0, 0, 0,
+        0x01, 0,    0,    0, 0, 0, 0, 0, 0x01, 0,    0,    0, 0, 0, 0, 0,
+        0x03, 0,    0,    0, 0, 0, 0, 0, 0x66, 0x6F, 0x6F, 0, 0, 0, 0, 0,
+        0x03, 0,    0,    0, 0, 0, 0, 0, 0x62, 0x61, 0x72, 0, 0, 0, 0, 0,
+        0,    0,    0,    0, 0, 0, 0, 0,
+    };
+
+    pub fn default(allocator: std.mem.Allocator) !@This() {
+        var self = @This(){
+            .bar = 42,
+            .baz = "baz",
+            .baaz = &.{ "a", "b", "c" },
+            .qux = true,
+            .foobar = .init(allocator),
+        };
+
+        try self.foobar.put("foo", "bar");
+
+        return self;
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.foobar.deinit();
+        self.* = undefined;
+    }
+};
 
 pub fn expectPacket(comptime expected: []const u8, reader: anytype) (ReadError(@TypeOf(reader), true) || error{UnexpectedPacket})!void {
     var buf: [expected.len]u8 = undefined;
