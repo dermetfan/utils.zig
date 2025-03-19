@@ -17,5 +17,9 @@
     '';
   };
 
-  perSystem.make-shells.default.imports = [config.flake.shellModules.zig];
+  perSystem.make-shells.default = {pkgs, ...}: {
+    imports = [config.flake.shellModules.zig];
+
+    packages = with pkgs; [sqlite.dev];
+  };
 }
