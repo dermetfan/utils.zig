@@ -19,12 +19,10 @@
           # Can be a boolean for for `-Drelease` or a string for `-Doptimize`.
           zigRelease ? true,
           # Passed to `-Dtarget` if not null.
-          zigTarget ? (
-            let
-              inherit (inputs.zig2nix.zig2nix-lib.${system}) zigTripleFromSystem resolveTargetSystem;
-            in
-              zigTripleFromSystem (resolveTargetSystem {platform = stdenv.targetPlatform;})
-          ),
+          zigTarget ? let
+            zig-env = inputs.zig2nix.zig-env.${stdenv.hostPlatform.system} {inherit (final) zig;};
+          in
+            (zig-env.target stdenv.targetPlatform.system).zig,
           # Passed to `-Ddynamic-linker` if not null.
           zigDynamicLinker ?
             if zigTarget == null
