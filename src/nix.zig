@@ -1,4 +1,5 @@
 const root = @import("root");
+const builtin = @import("builtin");
 const std = @import("std");
 
 const mem = @import("mem.zig");
@@ -84,7 +85,12 @@ fn libLeaf(allocator: std.mem.Allocator, comptime name: []const u8, extra_bindin
 
 /// A nix expression function that takes a flake and evaluates to the output of the `hydra-eval-jobs` executable.
 pub const hydraEvalJobs = expr: {
-    var buf: [4602]u8 = undefined;
+    var buf: [
+        switch (builtin.target.cpu.arch) {
+            .wasm32 => 4792,
+            else => 4602,
+        }
+    ]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     const allocator = fba.allocator();
 
