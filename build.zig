@@ -2,66 +2,27 @@ const std = @import("std");
 
 const Build = std.Build;
 
-pub const Options = struct {
-    target: Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-
-    zqlite: bool,
-
-    pub fn common(self: @This()) struct {
-        target: Build.ResolvedTarget,
-        optimize: std.builtin.OptimizeMode,
-    } {
-        return .{
-            .target = self.target,
-            .optimize = self.optimize,
-        };
-    }
-};
-
 pub fn build(b: *Build) !void {
-    const options = Options{
+    const options = .{
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
-
-        .zqlite = b.option(bool, "zqlite", "Enable the zqlite utils") orelse false,
-    };
-
-    const options_mod = options_mod: {
-        const src = b.addOptions();
-        src.addOption(bool, "zqlite", options.zqlite);
-        break :options_mod src.createModule();
     };
 
     const utils_mod = b.addModule("utils", .{
         .root_source_file = b.path("src/root.zig"),
         .target = options.target,
         .optimize = options.optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = options_mod },
-        },
     });
-    if (options.zqlite)
-        utils_mod.addImport("zqlite", (b.lazyDependency("zqlite", options.common()) orelse return).module("zqlite"));
 
     const test_step = b.step("test", "Run unit tests");
     {
         const utils_mod_test = b.addTest(.{ .root_module = utils_mod });
-        linkSystemLibraries(utils_mod_test.root_module, options);
-        utils_mod_test.root_module.addImport("build_options", options_mod);
 
         const run_utils_mod_test = b.addRunArtifact(utils_mod_test);
         test_step.dependOn(&run_utils_mod_test.step);
     }
 
     _ = utils.addCheckTls(b);
-}
-
-fn linkSystemLibraries(module: *Build.Module, options: Options) void {
-    if (options.zqlite) {
-        module.link_libc = true;
-        module.linkSystemLibrary("sqlite3", .{});
-    }
 }
 
 pub const utils = struct {

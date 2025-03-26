@@ -7,7 +7,7 @@
         ../src
       ];
 
-      zigDepsHash = "sha256-UAToaMbNu+3Zeirjx8FjeKbbHdBBDfvcU8HPe3DRsKA=";
+      zigDepsHash = "sha256-pQpattmS9VmO3ZIQUFn66az8GSmB4IvYhTTCFn6SUmo=";
 
       zigRelease = "ReleaseSafe";
 
@@ -17,8 +17,6 @@
       dontInstall = true;
 
       nativeCheckInputs = with pkgs; [sqlite];
-
-      zigCheckFlags = "-Dzqlite";
 
       postCheck = ''
         touch $out

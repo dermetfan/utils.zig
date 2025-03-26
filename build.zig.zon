@@ -3,13 +3,7 @@
     .version = "0.0.0",
     .fingerprint = 0x540f5beb0f6592e4,
     .minimum_zig_version = "0.14.0",
-    .dependencies = .{
-        .zqlite = .{
-            .url = "https://github.com/karlseguin/zqlite.zig/archive/d146898482a4c4bdcba487496f67a24afa12894d.tar.gz",
-            .hash = "zqlite-0.0.0-RWLaYxp7lQBh-o0STqzS1uZZb0tLTCGBDgzpG_dGjd2J",
-            .lazy = true,
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",
