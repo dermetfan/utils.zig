@@ -100,6 +100,109 @@ pub const utils = struct {
             addCheckTlsDependencies(check_step, dep_step, checked);
     }
 
+    pub const NixIncludeDirIterator = struct {
+        tokenizer: std.mem.TokenIterator(u8, .scalar),
+        expect: ?std.meta.Tag(Build.Module.IncludeDir) = null,
+
+        pub const Error = error{RelativeNixIncludeDir};
+
+        /// Only needed after `initOwned()`.
+        pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.tokenizer.buffer);
+        }
+
+        pub fn init(flags: []const u8) @This() {
+            return .{ .tokenizer = std.mem.tokenizeScalar(u8, flags, ' ') };
+        }
+
+        pub fn initOwned(allocator: std.mem.Allocator) std.process.GetEnvVarOwnedError!@This() {
+            const flags = try std.process.getEnvVarOwned(allocator, "NIX_CFLAGS_COMPILE");
+            errdefer allocator.free(flags);
+
+            return init(flags);
+        }
+
+        pub fn next(self: *@This()) Error!?Build.Module.IncludeDir {
+            while (self.tokenizer.next()) |flag| {
+                if (self.expect) |e| {
+                    defer self.expect = null;
+
+                    if (!std.fs.path.isAbsolute(flag))
+                        return error.RelativeNixIncludeDir;
+
+                    return switch (e) {
+                        inline .path, .path_after, .path_system => |tag| @unionInit(
+                            Build.Module.IncludeDir,
+                            @tagName(tag),
+                            .{ .cwd_relative = flag },
+                        ),
+                        else => unreachable,
+                    };
+                } else self.expect = if (std.mem.eql(u8, flag, "-I"))
+                    .path
+                else if (std.mem.eql(u8, flag, "-idirafter"))
+                    .path_after
+                else if (std.mem.eql(u8, flag, "-isystem"))
+                    .path_system
+                else
+                    continue;
+            } else return null;
+        }
+    };
+
+    test NixIncludeDirIterator {
+        const path1 = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-foo/include";
+        const path2 = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-bar/include";
+        const path3 = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-baz/include";
+
+        var iter = NixIncludeDirIterator.init(
+            \\ -frandom-seed=cbjljz61s4 -I
+        ++ " " ++ path1 ++
+            \\ -idirafter
+        ++ " " ++ path2 ++
+            \\ -isystem
+        ++ " " ++ path3,
+        );
+
+        try std.testing.expectEqualStrings(path1, (try iter.next()).?.path.cwd_relative);
+        try std.testing.expectEqualStrings(path2, (try iter.next()).?.path_after.cwd_relative);
+        try std.testing.expectEqualStrings(path3, (try iter.next()).?.path_system.cwd_relative);
+    }
+
+    pub fn addNixIncludePaths(target: anytype) (std.process.GetEnvVarOwnedError || NixIncludeDirIterator.Error)!void {
+        const Target = @TypeOf(target);
+
+        const allocator = switch (Target) {
+            *Build.Module => target.owner.allocator,
+            *Build.Step.Compile, *Build.Step.TranslateC => target.step.owner.allocator,
+            else => @compileError(@typeName(Target) ++ " is not supported"),
+        };
+
+        var iter = try NixIncludeDirIterator.initOwned(allocator);
+        defer iter.deinit(allocator);
+
+        while (try iter.next()) |include_dir|
+            addIncludeDir(target, include_dir);
+    }
+
+    pub fn addIncludeDir(target: anytype, include_dir: Build.Module.IncludeDir) void {
+        switch (include_dir) {
+            .path => |path| target.addIncludePath(path),
+            .path_after => |path| target.addAfterIncludePath(path),
+            .path_system => |path| target.addSystemIncludePath(path),
+            .framework_path => |path| target.addFrameworkPath(path),
+            .framework_path_system => |path| target.addSystemFrameworkPath(path),
+            .other_step => |other| {
+                // Modeled after `Build.Module.IncludeDir.appendZigProcessFlags()`.
+                if (other.generated_h) |header|
+                    target.addSystemIncludePath(.{ .generated = .{ .file = header } });
+                if (other.installed_headers_include_tree) |include_tree|
+                    target.addIncludePath(.{ .generated = .{ .file = &include_tree.generated_directory } });
+            },
+            .config_header_step => |header| target.addConfigHeader(header),
+        }
+    }
+
     /// Like `std.Build.Step.InstallDir`
     /// but does nothing instead of returning an error
     /// if the source directory does not exist.
@@ -141,3 +244,7 @@ pub const utils = struct {
         }
     };
 };
+
+test {
+    _ = utils;
+}
