@@ -1,5 +1,4 @@
 const std = @import("std");
-const meta = @import("src/meta.zig");
 
 const Build = std.Build;
 
