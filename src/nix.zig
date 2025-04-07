@@ -587,65 +587,71 @@ pub const FlakeMetadata = struct {
             lastModified: ?i64 = null,
         };
 
-        pub const IndirectScheme = meta.MergedStructs(Scheme, struct {
+        pub const IndirectScheme = meta.MergedStructs(&.{ Scheme, struct {
             id: []const u8,
             ref: ?[]const u8 = null,
             rev: ?[]const u8 = null,
-        });
+        } });
 
-        pub const PathScheme = meta.MergedStructs(Scheme, struct {
+        pub const PathScheme = meta.MergedStructs(&.{ Scheme, struct {
             path: []const u8,
             rev: ?[]const u8 = null,
             revCount: u64 = 0,
+        } });
+
+        pub const GitScheme = meta.MergedStructs(&.{
+            Scheme,
+            struct {
+                url: []const u8,
+                ref: ?[]const u8 = null,
+                rev: ?[]const u8 = null,
+                shallow: bool = false,
+                submodules: bool = false,
+                exportIgnore: bool = false,
+                revCount: u64 = 0,
+                allRefs: bool = false,
+                // name: ?[]const u8, // XXX remove, seems to have no use
+                // XXX make sure these are the same as `rev` but with "-dirty" suffix
+                dirtyRev: ?[]const u8 = null,
+                dirtyShortRev: ?[]const u8 = null,
+                verifyCommit: bool = false,
+                keytype: ?[]const u8 = null,
+                publicKey: ?[]const u8 = null,
+                publicKeys: ?[]const u8 = null,
+            },
         });
 
-        pub const GitScheme = meta.MergedStructs(Scheme, struct {
-            url: []const u8,
-            ref: ?[]const u8 = null,
-            rev: ?[]const u8 = null,
-            shallow: bool = false,
-            submodules: bool = false,
-            exportIgnore: bool = false,
-            revCount: u64 = 0,
-            allRefs: bool = false,
-
-            // name: ?[]const u8, // XXX remove, seems to have no use
-
-            // XXX make sure these are the same as `rev` but with "-dirty" suffix
-            dirtyRev: ?[]const u8 = null,
-            dirtyShortRev: ?[]const u8 = null,
-
-            verifyCommit: bool = false,
-            keytype: ?[]const u8 = null,
-            publicKey: ?[]const u8 = null,
-            publicKeys: ?[]const u8 = null,
+        pub const MercurialScheme = meta.MergedStructs(&.{
+            Scheme,
+            struct {
+                url: []const u8,
+                ref: ?[]const u8 = null,
+                rev: ?[]const u8 = null,
+                revCount: u64 = 0,
+                // name: ?[]const u8 = null, // XXX remove, seems to have no use
+            },
         });
 
-        pub const MercurialScheme = meta.MergedStructs(Scheme, struct {
-            url: []const u8,
-            ref: ?[]const u8 = null,
-            rev: ?[]const u8 = null,
-            revCount: u64 = 0,
-            // name: ?[]const u8 = null, // XXX remove, seems to have no use
+        pub const CurlScheme = meta.MergedStructs(&.{
+            Scheme,
+            struct {
+                // type: []const u8, // XXX remove, makes no sense
+                url: []const u8,
+                // name: ?[]const u8 = null, // XXX remove, seems to have no use
+                unpack: bool = true,
+                rev: ?[]const u8 = null,
+                revCount: u64 = 0,
+            },
         });
 
-        pub const CurlScheme = meta.MergedStructs(Scheme, struct {
-            // type: []const u8, // XXX remove, makes no sense
-            url: []const u8,
-            // name: ?[]const u8 = null, // XXX remove, seems to have no use
-            unpack: bool = true,
-            rev: ?[]const u8 = null,
-            revCount: u64 = 0,
-        });
-
-        pub const GitArchiveScheme = meta.MergedStructs(Scheme, struct {
+        pub const GitArchiveScheme = meta.MergedStructs(&.{ Scheme, struct {
             owner: []const u8,
             repo: []const u8,
             ref: ?[]const u8 = null,
             rev: ?[]const u8 = null,
             host: ?[]const u8 = null,
             treeHash: ?[]const u8 = null,
-        });
+        } });
 
         pub fn locked(self: @This(), trust_tarballs_from_git_forges: bool) bool {
             return switch (self) {

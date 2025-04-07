@@ -268,16 +268,19 @@ test MergedUnions {
     }
 }
 
-pub fn MergedStructs(comptime A: type, comptime B: type) type {
-    var info = @typeInfo(A).@"struct";
+pub fn MergedStructs(structs: []const type) type {
+    if (structs.len == 0) @compileError("Cannot merge zero structs.");
+
+    var info = @typeInfo(structs[0]).@"struct";
     info.decls = &.{};
-    info.fields = info.fields ++ @typeInfo(B).@"struct".fields;
+    for (structs[1..]) |strukt|
+        info.fields = info.fields ++ @typeInfo(strukt).@"struct".fields;
     return @Type(.{ .@"struct" = info });
 }
 
 test MergedStructs {
     comptime try std.testing.expectEqualDeep(
-        @typeInfo(MergedStructs(
+        @typeInfo(MergedStructs(&.{
             struct {
                 foo: u1,
                 bar: u2,
@@ -285,7 +288,7 @@ test MergedStructs {
             struct {
                 baz: u3,
             },
-        )).@"struct",
+        })).@"struct",
         std.builtin.Type.Struct{
             .layout = .auto,
             .is_tuple = false,
