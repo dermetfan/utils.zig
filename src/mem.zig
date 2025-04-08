@@ -198,41 +198,41 @@ test clone {
 
 pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error!@TypeOf(obj) {
     const Obj = @TypeOf(obj);
-    switch (@typeInfo(Obj)) {
+    return switch (@typeInfo(Obj)) {
         .pointer => |pointer| switch (pointer.size) {
-            .one, .c => {
+            .one, .c => ptr: {
                 const ptr = try allocator.create(pointer.child);
                 ptr.* = try cloneLeaky(allocator, obj.*);
-                return ptr;
+                break :ptr ptr;
             },
-            .slice => {
+            .slice => slice: {
                 const slice = try allocator.alloc(pointer.child, obj.len);
                 for (slice, obj) |*dst, src|
                     dst.* = try cloneLeaky(allocator, src);
-                return slice;
+                break :slice slice;
             },
             .many => @compileError("cannot clone many-item pointer"),
         },
-        .array => {
+        .array => array: {
             const array: Obj = undefined;
             for (&array, obj) |*dst, src|
                 dst.* = try cloneLeaky(allocator, src);
-            return array;
+            break :array array;
         },
-        .optional => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
-        .int, .float, .vector, .@"enum", .bool => return obj,
-        .@"union" => return switch (obj) {
+        .optional => if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
+        .int, .float, .vector, .@"enum", .bool => obj,
+        .@"union" => switch (obj) {
             inline else => |value, tag| @unionInit(Obj, @tagName(tag), try cloneLeaky(allocator, value)),
         },
-        .@"struct" => |strukt| {
+        .@"struct" => |strukt| strukt: {
             var cloned: Obj = undefined;
             inline for (strukt.fields) |field|
                 @field(cloned, field.name) = try cloneLeaky(allocator, @field(obj, field.name));
-            return cloned;
+            break :strukt cloned;
         },
         else => if (@bitSizeOf(Obj) == 0)
-            return undefined
+            undefined
         else
             @compileError("cannot clone comptime-only type " ++ @typeName(Obj)),
-    }
+    };
 }
