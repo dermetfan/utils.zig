@@ -1301,7 +1301,7 @@ pub const FlakeMetadata = struct {
                 } } else if (inputs != null and locked == null and original == null) .{ .root = .{
                     .inputs = inputs.?,
                 } } else if (inputs == null and locked == null and original == null) .{ .root = .{
-                    .inputs = .{ .map = .{} },
+                    .inputs = .{},
                 } } else error.MissingField;
             }
         };
