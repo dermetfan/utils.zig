@@ -188,6 +188,14 @@ pub fn clone(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error
     return cloned;
 }
 
+test clone {
+    (try clone(std.testing.allocator, std.Uri{
+        .scheme = "http",
+        .host = .{ .raw = "example.com" },
+        .port = 8080,
+    })).deinit();
+}
+
 pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error!@TypeOf(obj) {
     const Obj = @TypeOf(obj);
     switch (@typeInfo(Obj)) {
@@ -213,11 +221,8 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
         },
         .optional => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
         .int, .float, .vector, .@"enum", .bool => return obj,
-        .@"union" => {
-            const active_tag = std.meta.activeTag(obj);
-            const active_tag_name = @tagName(active_tag);
-            const active = @field(obj, active_tag_name);
-            return @unionInit(Obj, active_tag_name, try cloneLeaky(allocator, active));
+        .@"union" => return switch (obj) {
+            inline else => |value, tag| @unionInit(Obj, @tagName(tag), try cloneLeaky(allocator, value)),
         },
         .@"struct" => |strukt| {
             var cloned: Obj = undefined;
