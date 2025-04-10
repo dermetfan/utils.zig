@@ -74,23 +74,6 @@ pub fn fmtJsonEncode(data: anytype, options: std.json.StringifyOptions) struct {
     return .{ .data = data, .options = options };
 }
 
-pub fn fmtJsonStringify(data: anytype, options: std.json.StringifyOptions) struct {
-    data: @TypeOf(data),
-    options: std.json.StringifyOptions,
-
-    pub fn format(
-        self: @This(),
-        comptime fmt: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) @TypeOf(writer).Error!void {
-        std.debug.assert(fmt.len == 0);
-        try std.json.stringify(self.data, self.options, writer);
-    }
-} {
-    return .{ .data = data, .options = options };
-}
-
 pub fn fmtJsonStringifyMaxDepth(
     data: anytype,
     options: std.json.StringifyOptions,
