@@ -14,5 +14,5 @@ pub const uri = @import("uri.zig");
 pub const wasm = @import("wasm.zig");
 
 test {
-    std.testing.refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

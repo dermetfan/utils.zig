@@ -182,19 +182,16 @@ pub const Action = union(enum) {
         try write_stream.endObject();
     }
 
-    fn logTo(self: @This(), writer: anytype, writer_mutex: anytype) !void {
-        var buffered_writer = std.io.bufferedWriter(writer);
-        const buf_writer = buffered_writer.writer();
-
-        writer_mutex.lock();
-        defer writer_mutex.unlock();
+    fn logTo(self: @This(), io: std.Io, writer: *std.Io.Writer, writer_mutex: anytype) !void {
+        try writer_mutex.lock(io);
+        defer writer_mutex.unlock(io);
 
         nosuspend {
-            try buf_writer.writeAll(prefix);
-            try std.json.stringify(self, .{}, buf_writer);
-            try buf_writer.writeByte('\n');
+            try writer.writeAll(prefix);
+            try writer.print("{f}", .{std.json.fmt(self, .{})});
+            try writer.writeByte('\n');
 
-            try buffered_writer.flush();
+            try writer.flush();
         }
     }
 
@@ -203,21 +200,44 @@ pub const Action = union(enum) {
     }
 };
 
-fn logMsgTo(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype, writer: anytype, writer_mutex: anytype) !void {
+fn logMsgTo(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    level: Action.Verbosity,
+    comptime fmt: []const u8,
+    args: anytype,
+    writer: *std.Io.Writer,
+    writer_mutex: anytype,
+) !void {
     const message = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(message);
 
     try (Action{ .msg = .{
         .level = level,
         .msg = message,
-    } }).logTo(writer, writer_mutex);
+    } }).logTo(io, writer, writer_mutex);
 }
 
-pub fn logMsg(allocator: std.mem.Allocator, level: Action.Verbosity, comptime fmt: []const u8, args: anytype) !void {
-    try logMsgTo(allocator, level, fmt, args, stderr, stderr_mutex);
+pub fn logMsg(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    level: Action.Verbosity,
+    comptime fmt: []const u8,
+    args: anytype,
+) !void {
+    try logMsgTo(allocator, io, level, fmt, args, stderr, stderr_mutex);
 }
 
-fn logErrorInfoTo(allocator: std.mem.Allocator, level: Action.Verbosity, err: anyerror, comptime fmt: []const u8, args: anytype, writer: anytype, writer_mutex: anytype) !void {
+fn logErrorInfoTo(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    level: Action.Verbosity,
+    err: anyerror,
+    comptime fmt: []const u8,
+    args: anytype,
+    writer: *std.Io.Writer,
+    writer_mutex: anytype,
+) !void {
     const msg = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(msg);
 
@@ -225,33 +245,40 @@ fn logErrorInfoTo(allocator: std.mem.Allocator, level: Action.Verbosity, err: an
         .level = level,
         .msg = msg,
         .raw_msg = @errorName(err),
-    } }).logTo(writer, writer_mutex);
+    } }).logTo(io, writer, writer_mutex);
 }
 
-pub fn logErrorInfo(allocator: std.mem.Allocator, level: Action.Verbosity, err: anyerror, comptime fmt: []const u8, args: anytype) !void {
-    try logErrorInfoTo(allocator, level, err, fmt, args, stderr, stderr_mutex);
+pub fn logErrorInfo(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    level: Action.Verbosity,
+    err: anyerror,
+    comptime fmt: []const u8,
+    args: anytype,
+) !void {
+    try logErrorInfoTo(allocator, io, level, err, fmt, args, stderr, stderr_mutex);
 }
 
 test Action {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var testing_stderr = std.ArrayList(u8).init(allocator);
+    var testing_stderr = std.Io.Writer.Allocating.init(allocator);
     defer testing_stderr.deinit();
-    const testing_stderr_writer = testing_stderr.writer();
-    var testing_stderr_mutex = std.Thread.Mutex{};
+    var testing_stderr_mutex = std.Io.Mutex.init;
 
-    try logMsgTo(allocator, .info, "log {d}", .{1}, testing_stderr_writer, &testing_stderr_mutex);
+    try logMsgTo(allocator, io, .info, "log {d}", .{1}, &testing_stderr.writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"msg","level":3,"msg":"log 1"}
         \\
-    , testing_stderr.items);
+    , testing_stderr.written());
     testing_stderr.clearRetainingCapacity();
 
-    try logErrorInfoTo(allocator, .info, error.Foobar, "error_info {d}", .{1}, testing_stderr_writer, &testing_stderr_mutex);
+    try logErrorInfoTo(allocator, io, .info, error.Foobar, "error_info {d}", .{1}, &testing_stderr.writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"msg","level":3,"msg":"error_info 1","raw_msg":"Foobar"}
         \\
-    , testing_stderr.items);
+    , testing_stderr.written());
     testing_stderr.clearRetainingCapacity();
 
     try (Action{ .start_activity = .{
@@ -264,18 +291,18 @@ test Action {
             .{ .int = 4 },
             .{ .string = "str" },
         },
-    } }).logTo(testing_stderr_writer, &testing_stderr_mutex);
+    } }).logTo(io, &testing_stderr.writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"start","id":1,"level":3,"type":106,"text":"start_activity","parent":0,"fields":[4,"str"]}
         \\
-    , testing_stderr.items);
+    , testing_stderr.written());
     testing_stderr.clearRetainingCapacity();
 
-    try (Action{ .stop_activity = 1 }).logTo(testing_stderr_writer, &testing_stderr_mutex);
+    try (Action{ .stop_activity = 1 }).logTo(io, &testing_stderr.writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"stop","id":1}
         \\
-    , testing_stderr.items);
+    , testing_stderr.written());
     testing_stderr.clearRetainingCapacity();
 
     try (Action{ .result = .{
@@ -285,98 +312,106 @@ test Action {
             .{ .int = 4 },
             .{ .string = "str" },
         },
-    } }).logTo(testing_stderr_writer, &testing_stderr_mutex);
+    } }).logTo(io, &testing_stderr.writer, &testing_stderr_mutex);
     try std.testing.expectEqualStrings(prefix ++
         \\{"action":"result","id":1,"type":105,"fields":[4,"str"]}
         \\
-    , testing_stderr.items);
+    , testing_stderr.written());
     testing_stderr.clearRetainingCapacity();
 }
 
-/// Writes bytes that are not part of Nix' `--log-format internal-json` to `DiscardWriter`.
-pub fn LogStream(comptime InnerReader: type, comptime DiscardWriter: type) type {
-    return struct {
-        inner_reader: InnerReader,
-        discard_writer: DiscardWriter,
-        state: union(enum) {
-            /// The last byte read was a newline or part of the prefix.
-            /// We are now expecting the byte at this index in the prefix.
-            unknown: PrefixIndex,
-            /// The prefix has been read and on the next read we will write
-            /// this index in the prefix to the output buffer.
-            prefix: PrefixIndex,
-            /// The last byte read was part of a log message.
-            inside,
-            /// The last byte read was not part of a log message.
-            outside,
-        } = .{ .unknown = 0 },
+/// Writes bytes that are not part of Nix' `--log-format internal-json` to `discard_writer`.
+pub const LogReader = struct {
+    inner_reader: *std.Io.Reader,
+    discard_writer: *std.Io.Writer,
+    state: union(enum) {
+        /// The last byte read was a newline or part of the prefix.
+        /// We are now expecting the byte at this index in the prefix.
+        unknown: PrefixIndex,
+        /// The prefix has been read and on the next read we will write
+        /// this index in the prefix to the output buffer.
+        prefix: PrefixIndex,
+        /// The last byte read was part of a log message.
+        inside,
+        /// The last byte read was not part of a log message.
+        outside,
+    } = .{ .unknown = 0 },
+    interface: std.Io.Reader,
 
-        const PrefixIndex = std.math.IntFittingRange(0, prefix.len - 1);
+    const PrefixIndex = std.math.IntFittingRange(0, prefix.len - 1);
 
-        pub const Error = InnerReader.NoEofError || DiscardWriter.Error;
-        pub const Reader = std.io.Reader(*@This(), Error, read);
+    pub fn init(log_r: *std.Io.Reader, discard_w: *std.Io.Writer) @This() {
+        return .{
+            .inner_reader = log_r,
+            .discard_writer = discard_w,
+            .interface = .{
+                .vtable = &.{ .stream = stream },
+                .buffer = &.{},
+                .seek = 0,
+                .end = 0,
+            },
+        };
+    }
 
-        pub fn read(self: *@This(), buf: []u8) Error!usize {
-            var buf_idx: usize = 0;
-            while (buf_idx < buf.len) {
-                switch (self.state) {
-                    .unknown => |prefix_idx| {
-                        const byte = self.inner_reader.readByte() catch |err|
-                            if (err == error.EndOfStream) break else return err;
+    /// Returns the number of bytes written to `io_w`
+    /// so in case of zero it could still have written to `discard_writer`.
+    pub fn stream(io_r: *std.Io.Reader, io_w: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self: *@This() = @fieldParentPtr("interface", io_r);
 
-                        if (prefix[prefix_idx] == byte) {
-                            self.state = if (prefix_idx == prefix.len - 1)
-                                .{ .prefix = 0 }
-                            else
-                                .{ .unknown = prefix_idx + 1 };
-                        } else {
-                            try self.discard_writer.writeAll(prefix[0..prefix_idx]);
-                            try self.discard_writer.writeByte(byte);
+        return switch (self.state) {
+            .unknown => |prefix_idx| unknown: {
+                const byte = try self.inner_reader.takeByte();
 
-                            self.state = if (byte == '\n')
-                                .{ .unknown = 0 }
-                            else
-                                .outside;
-                        }
-                    },
-                    .prefix => |prefix_idx| {
-                        buf[buf_idx] = prefix[prefix_idx];
-                        buf_idx += 1;
+                if (prefix[prefix_idx] == byte) {
+                    self.state = if (prefix_idx == prefix.len - 1)
+                        .{ .prefix = 0 }
+                    else
+                        .{ .unknown = prefix_idx + 1 };
+                } else {
+                    try self.discard_writer.writeAll(prefix[0..prefix_idx]);
+                    try self.discard_writer.writeByte(byte);
 
-                        self.state = if (prefix_idx == prefix.len - 1)
-                            .inside
-                        else
-                            .{ .prefix = prefix_idx + 1 };
-                    },
-                    .inside => {
-                        const byte = self.inner_reader.readByte() catch |err|
-                            if (err == error.EndOfStream) break else return err;
-
-                        buf[buf_idx] = byte;
-                        buf_idx += 1;
-
-                        if (byte == '\n') self.state = .{ .unknown = 0 };
-                    },
-                    .outside => {
-                        const byte = self.inner_reader.readByte() catch |err|
-                            if (err == error.EndOfStream) break else return err;
-
-                        try self.discard_writer.writeByte(byte);
-
-                        if (byte == '\n') self.state = .{ .unknown = 0 };
-                    },
+                    self.state = if (byte == '\n')
+                        .{ .unknown = 0 }
+                    else
+                        .outside;
                 }
-            }
-            return buf_idx;
-        }
 
-        pub fn reader(self: *@This()) Reader {
-            return .{ .context = self };
-        }
-    };
-}
+                break :unknown 0;
+            },
+            .prefix => |prefix_idx| prefix: {
+                try io_w.writeByte(prefix[prefix_idx]);
 
-test LogStream {
+                self.state = if (prefix_idx == prefix.len - 1)
+                    .inside
+                else
+                    .{ .prefix = prefix_idx + 1 };
+
+                break :prefix 1;
+            },
+            .inside => inside: {
+                const byte = try self.inner_reader.takeByte();
+
+                try io_w.writeByte(byte);
+
+                if (byte == '\n') self.state = .{ .unknown = 0 };
+
+                break :inside 1;
+            },
+            .outside => outside: {
+                const byte = try self.inner_reader.takeByte();
+
+                try self.discard_writer.writeByte(byte);
+
+                if (byte == '\n') self.state = .{ .unknown = 0 };
+
+                break :outside 0;
+            },
+        };
+    }
+};
+
+test LogReader {
     const input_buf =
         prefix ++
         \\{"foo": 1}
@@ -390,14 +425,15 @@ test LogStream {
         \\dummy://
         \\
         ;
-    var input_stream = std.io.fixedBufferStream(input_buf);
+    var input_r = std.Io.Reader.fixed(input_buf);
 
     var discard_buf: [input_buf.len]u8 = undefined;
-    var discard_stream = std.io.fixedBufferStream(&discard_buf);
+    var discard_w = std.Io.Writer.Discarding.init(&discard_buf);
 
-    var log_stream = logStream(input_stream.reader(), discard_stream.writer());
+    var log_reader = LogReader.init(&input_r, &discard_w.writer);
 
-    const logs = (try log_stream.reader().readBoundedBytes(input_buf.len)).constSlice();
+    var logs_buf: [input_buf.len]u8 = undefined;
+    const logs = logs_buf[0..try log_reader.interface.readSliceShort(&logs_buf)];
 
     try std.testing.expectEqualStrings(prefix ++
         \\{"foo": 1}
@@ -414,9 +450,9 @@ test LogStream {
         \\# accept
         \\dummy://
         \\
-    , discard_stream.getWritten());
+    , discard_w.writer.buffered());
 }
 
-pub fn logStream(inner_reader: anytype, discard_writer: anytype) LogStream(@TypeOf(inner_reader), @TypeOf(discard_writer)) {
-    return .{ .inner_reader = inner_reader, .discard_writer = discard_writer };
+test {
+    std.testing.refAllDecls(@This());
 }

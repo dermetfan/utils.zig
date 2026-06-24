@@ -43,3 +43,7 @@ test QueryIterator {
     }, iter.next());
     try std.testing.expect(iter.next() == null);
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

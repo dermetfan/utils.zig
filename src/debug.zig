@@ -17,3 +17,7 @@ var stderr_mutex = StderrMutex{};
 pub fn getStderrMutex() *StderrMutex {
     return &stderr_mutex;
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

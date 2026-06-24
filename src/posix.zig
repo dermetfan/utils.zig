@@ -449,13 +449,13 @@ pub fn PollingStream(comptime kind: FileHandleType) type {
         pub const ReadError = posix.PollError || meta.ErrorSetExcluding(switch (kind) {
             .fd => posix.ReadError,
             .socket => posix.RecvFromError,
-        }, &.{error.WouldBlock});
+        }, error.WouldBlock);
         pub const Reader = std.io.Reader(@This(), ReadError, read);
 
         pub const WriteError = posix.PollError || meta.ErrorSetExcluding(switch (kind) {
             .fd => posix.WriteError,
             .socket => posix.SendError,
-        }, &.{error.WouldBlock});
+        }, error.WouldBlock);
         pub const Writer = std.io.Writer(@This(), WriteError, write);
 
         /// Returns `error.NotOpenForReading` on `POLL.HUP` and `POLL.ERR`.
@@ -536,4 +536,8 @@ pub fn PollingStream(comptime kind: FileHandleType) type {
             return .{ .context = self };
         }
     };
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

@@ -1,42 +1,65 @@
 const std = @import("std");
 
-pub fn TeeReader(
-    ReaderType: type,
-    WriterType: type,
-) type {
-    return struct {
-        src: ReaderType,
-        dst: WriterType,
+const Io = std.Io;
 
-        pub const Reader = std.io.GenericReader(@This(), Error, read);
-        pub const Error = ReaderType.Error || WriterType.Error;
+pub const TeeReader = struct {
+    src: *Io.Reader,
+    dst: *Io.Writer,
+    interface: Io.Reader,
 
-        pub fn reader(self: @This()) Reader {
-            return .{ .context = self };
-        }
+    pub fn init(src: *Io.Reader, dst: *Io.Writer, buffer: []u8) @This() {
+        return .{
+            .src = src,
+            .dst = dst,
+            .interface = .{
+                .vtable = &.{ .stream = stream },
+                .buffer = buffer,
+                .seek = 0,
+                .end = 0,
+            },
+        };
+    }
 
-        pub fn read(self: @This(), dst: []u8) Error!usize {
-            const n = try self.src.read(dst);
-            try self.dst.writeAll(dst[0..n]);
-            return n;
-        }
-    };
-}
+    pub fn stream(io_r: *Io.Reader, io_w: *Io.Writer, limit: Io.Limit) Io.Reader.Error!usize {
+        const self: *@This() = @fieldParentPtr("interface", io_r);
 
-pub fn teeReader(src: anytype, dst: anytype) TeeReader(@TypeOf(src), @TypeOf(dst)) {
-    return .{ .src = src, .dst = dst };
-}
+        var buffer_w = Io.Writer.fixed(self.interface.buffer);
 
-test teeReader {
-    var src = std.io.fixedBufferStream("foo");
+        const written = self.src.stream(&buffer_w, limit) catch |err| switch (err) {
+            error.WriteFailed => unreachable,
+            else => |e| return e,
+        };
+        if (std.debug.runtime_safety)
+            std.debug.assert(written == buffer_w.buffered().len);
+
+        self.dst.writeAll(buffer_w.buffered()) catch |err| switch (err) {
+            error.WriteFailed => unreachable,
+            else => |e| return e,
+        };
+        io_w.writeAll(buffer_w.buffered()) catch |err| switch (err) {
+            error.WriteFailed => unreachable,
+            else => |e| return e,
+        };
+
+        return written;
+    }
+};
+
+test TeeReader {
+    var src = Io.Reader.fixed("foo");
     var dst = dst: {
         var buf: [3]u8 = undefined;
-        break :dst std.io.fixedBufferStream(&buf);
+        break :dst Io.Writer.fixed(&buf);
     };
-    const tee_reader = teeReader(src.reader(), dst.writer()).reader();
+    var tee_buf: [3]u8 = undefined;
+    var tee_reader = TeeReader.init(&src, &dst, &tee_buf);
 
     var buf: [3]u8 = undefined;
-    try std.testing.expectEqual(3, try tee_reader.readAll(&buf));
+    try tee_reader.interface.readSliceAll(&buf);
     try std.testing.expectEqualStrings("foo", &buf);
     try std.testing.expectEqualStrings("foo", dst.buffer);
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

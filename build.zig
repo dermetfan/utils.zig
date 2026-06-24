@@ -66,20 +66,12 @@ pub const utils = struct {
 
         pub const Error = error{RelativeNixIncludeDir};
 
-        /// Only needed after `initOwned()`.
-        pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
-            allocator.free(self.tokenizer.buffer);
-        }
-
         pub fn init(flags: []const u8) @This() {
             return .{ .tokenizer = std.mem.tokenizeScalar(u8, flags, ' ') };
         }
 
-        pub fn initOwned(allocator: std.mem.Allocator) std.process.GetEnvVarOwnedError!@This() {
-            const flags = try std.process.getEnvVarOwned(allocator, "NIX_CFLAGS_COMPILE");
-            errdefer allocator.free(flags);
-
-            return init(flags);
+        pub fn initDefault(environ_map: std.process.Environ.Map) !@This() {
+            return init(environ_map.get("NIX_CFLAGS_COMPILE") orelse "");
         }
 
         pub fn next(self: *@This()) Error!?Build.Module.IncludeDir {
@@ -117,11 +109,11 @@ pub const utils = struct {
 
         var iter = NixIncludeDirIterator.init(
             \\ -frandom-seed=cbjljz61s4 -I
-        ++ " " ++ path1 ++
-            \\ -idirafter
-        ++ " " ++ path2 ++
-            \\ -isystem
-        ++ " " ++ path3,
+            ++ " " ++ path1 ++
+                \\ -idirafter
+            ++ " " ++ path2 ++
+                \\ -isystem
+            ++ " " ++ path3,
         );
 
         try std.testing.expectEqualStrings(path1, (try iter.next()).?.path.cwd_relative);
@@ -129,23 +121,15 @@ pub const utils = struct {
         try std.testing.expectEqualStrings(path3, (try iter.next()).?.path_system.cwd_relative);
     }
 
-    pub fn addNixIncludePaths(target: anytype) (std.process.GetEnvVarOwnedError || NixIncludeDirIterator.Error)!void {
-        const Target = @TypeOf(target);
-
-        const allocator = switch (Target) {
-            *Build.Module => target.owner.allocator,
-            *Build.Step.Compile, *Build.Step.TranslateC => target.step.owner.allocator,
-            else => @compileError(@typeName(Target) ++ " is not supported"),
-        };
-
-        var iter = try NixIncludeDirIterator.initOwned(allocator);
-        defer iter.deinit(allocator);
+    pub fn addNixIncludePaths(target: anytype, environ_map: std.process.Environ.Map) NixIncludeDirIterator.Error!void {
+        var iter = try NixIncludeDirIterator.initDefault(environ_map);
 
         while (try iter.next()) |include_dir|
             addIncludeDir(target, include_dir);
     }
 
     pub fn addIncludeDir(target: anytype, include_dir: Build.Module.IncludeDir) void {
+        const Target = @TypeOf(target.*);
         switch (include_dir) {
             .path => |path| target.addIncludePath(path),
             .path_after => |path| target.addAfterIncludePath(path),
@@ -160,6 +144,7 @@ pub const utils = struct {
                     target.addIncludePath(.{ .generated = .{ .file = &include_tree.generated_directory } });
             },
             .config_header_step => |header| target.addConfigHeader(header),
+            .embed_path => |path| if (@hasDecl(Target, "addEmbedPath")) target.addEmbedPath(path) else @panic(@typeName(Target) ++ " has no addEmbedPath()"),
         }
     }
 
