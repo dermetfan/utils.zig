@@ -236,3 +236,7 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
             @compileError("cannot clone comptime-only type " ++ @typeName(Obj)),
     };
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

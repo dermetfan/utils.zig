@@ -19,21 +19,19 @@ pub const Options = struct {
     log_scope: @TypeOf(.EnumLiteral) = .@"utils/nix",
     runFn: @TypeOf(defaultRunFn) = defaultRunFn,
 
-    const RunArgs = @typeInfo(@TypeOf(std.process.Child.run)).@"fn".params[0].type.?;
-
     /// Only has the fields that are actually needed
     /// so that an implementation that supports only these can be supplied.
-    pub const RunFnArgs = meta.SubStruct(RunArgs, std.enums.EnumSet(std.meta.FieldEnum(RunArgs)).initMany(&.{
-        .allocator,
-        .max_output_bytes,
+    pub const RunFnArgs = meta.SubStruct(std.process.RunOptions, std.enums.EnumSet(std.meta.FieldEnum(std.process.RunOptions)).initMany(&.{
+        .stdout_limit,
+        .stderr_limit,
         .argv,
     }));
 
-    fn defaultRunFn(args: RunFnArgs) std.process.Child.RunError!std.process.Child.RunResult {
-        return std.process.Child.run(.{
-            .allocator = args.allocator,
-            .max_output_bytes = args.max_output_bytes,
+    fn defaultRunFn(allocator: std.mem.Allocator, io: std.Io, args: RunFnArgs) std.process.RunError!std.process.RunResult {
+        return std.process.run(allocator, io, .{
             .argv = args.argv,
+            .stdout_limit = args.stdout_limit,
+            .stderr_limit = args.stderr_limit,
         });
     }
 };
@@ -53,7 +51,7 @@ const ExprBinding = struct {
 
 /// `bindings` must not have a `lib`.
 fn libLeaf(allocator: std.mem.Allocator, comptime name: []const u8, extra_bindings: []const ExprBinding) !std.ArrayListUnmanaged(u8) {
-    var expr = std.ArrayListUnmanaged(u8){};
+    var expr = std.ArrayList(u8).empty;
 
     // using `with` instead of a `let` block so that
     // `lib` and `bindings` have no access to anything else
@@ -88,7 +86,7 @@ pub const hydraEvalJobs = expr: {
     var buf: [
         switch (builtin.target.cpu.arch) {
             .wasm32 => 4792,
-            else => 4602,
+            else => 5561,
         }
     ]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
@@ -191,91 +189,88 @@ pub const FailedBuilds = struct {
     }
 
     /// Duplicates the slices taken from `stderr` so you can free it after the call.
-    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr_reader: anytype) !@This() {
-        var builds = std.StringArrayHashMapUnmanaged(void){};
+    pub fn fromErrorMessage(allocator: std.mem.Allocator, stderr_r: *std.Io.Reader) !@This() {
+        var builds = std.array_hash_map.String(void).empty;
         defer builds.deinit(allocator);
 
-        var dependents = std.StringArrayHashMapUnmanaged(void){};
+        var dependents = std.array_hash_map.String(void).empty;
         defer dependents.deinit(allocator);
 
-        var line = std.ArrayListUnmanaged(u8){};
-        defer line.deinit(allocator);
-        const line_writer = line.writer(allocator);
+        var line = std.Io.Writer.Allocating.init(allocator);
+        defer line.deinit();
 
         line: while (true) : (line.clearRetainingCapacity()) {
-            stderr_reader.streamUntilDelimiter(line_writer, '\n', null) catch |err| switch (err) {
+            _ = stderr_r.streamDelimiter(&line.writer, '\n') catch |err| switch (err) {
                 error.EndOfStream => break :line,
                 else => |e| return e,
             };
+            stderr_r.toss(1);
 
-            const readExpected = struct {
-                fn call(reader: anytype, comptime slice: []const u8) !bool {
+            const discardExpected = struct {
+                fn discardExpected(r: *std.Io.Reader, comptime slice: []const u8) !bool {
                     var buf: [slice.len]u8 = undefined;
-                    const len = reader.readAll(&buf) catch |err|
+                    r.readSliceAll(&buf) catch |err|
                         return if (err == error.EndOfStream) false else err;
-                    return std.mem.eql(u8, buf[0..len], slice);
+                    return std.mem.eql(u8, &buf, slice);
                 }
-            }.call;
+            }.discardExpected;
 
             builds: {
-                var line_stream = std.io.fixedBufferStream(line.items);
-                const line_reader = line_stream.reader();
+                var line_r = std.Io.Reader.fixed(line.written());
 
-                var drv_list = std.ArrayListUnmanaged(u8){};
-                errdefer drv_list.deinit(allocator);
+                var drv_list = std.Io.Writer.Allocating.init(allocator);
+                errdefer drv_list.deinit();
 
-                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
-                if (!try readExpected(line_reader, "rror: builder for '")) break :builds;
-                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :builds;
-                if (!try readExpected(line_reader, " failed")) break :builds;
+                _ = try line_r.discardDelimiterExclusive('e'); // skip whitespace
+                if (!try discardExpected(&line_r, "error: builder for '")) break :builds;
+                _ = line_r.streamDelimiter(&drv_list.writer, '\'') catch break :builds;
+                if (!try discardExpected(&line_r, "' failed")) break :builds;
 
-                const drv = try drv_list.toOwnedSlice(allocator);
+                const drv = try drv_list.toOwnedSlice();
                 errdefer allocator.free(drv);
 
                 try builds.put(allocator, drv, {});
             }
 
             foreign_builds: {
-                var line_stream = std.io.fixedBufferStream(line.items);
-                const line_reader = line_stream.reader();
+                var line_r = std.Io.Reader.fixed(line.written());
 
-                var drv_list = std.ArrayListUnmanaged(u8){};
-                errdefer drv_list.deinit(allocator);
+                var drv_list = std.Io.Writer.Allocating.init(allocator);
+                errdefer drv_list.deinit();
 
-                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
-                if (!try readExpected(line_reader, "rror: a '")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, " is required to build '")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, ", but I am a '")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '\'', null) catch break :foreign_builds;
-                if (!try readExpected(line_reader, " with features {")) break :foreign_builds;
-                line_reader.streamUntilDelimiter(std.io.null_writer, '}', null) catch break :foreign_builds;
-                if (line_reader.readByte() != error.EndOfStream) break :foreign_builds;
+                _ = try line_r.discardDelimiterExclusive('e'); // skip whitespace
+                if (!try discardExpected(&line_r, "error: a '")) break :foreign_builds;
+                _ = line_r.discardDelimiterExclusive('\'') catch break :foreign_builds;
+                if (!try discardExpected(&line_r, "' with features {")) break :foreign_builds;
+                _ = line_r.discardDelimiterExclusive('}') catch break :foreign_builds;
+                if (!try discardExpected(&line_r, "} is required to build '")) break :foreign_builds;
+                _ = line_r.streamDelimiter(&drv_list.writer, '\'') catch break :foreign_builds;
+                if (!try discardExpected(&line_r, "', but I am a '")) break :foreign_builds;
+                _ = line_r.discardDelimiterExclusive('\'') catch break :foreign_builds;
+                if (!try discardExpected(&line_r, "' with features {")) break :foreign_builds;
+                _ = line_r.discardDelimiterInclusive('}') catch break :foreign_builds;
+                if (line_r.takeByte() != error.EndOfStream) break :foreign_builds;
 
-                const drv = try drv_list.toOwnedSlice(allocator);
+                const drv = try drv_list.toOwnedSlice();
                 errdefer allocator.free(drv);
 
                 try builds.put(allocator, drv, {});
             }
 
             dependents: {
-                var line_stream = std.io.fixedBufferStream(line.items);
-                const line_reader = line_stream.reader();
+                var line_r = std.Io.Reader.fixed(line.written());
 
-                var drv_list = std.ArrayListUnmanaged(u8){};
-                errdefer drv_list.deinit(allocator);
+                var drv_list = std.Io.Writer.Allocating.init(allocator);
+                errdefer drv_list.deinit();
 
-                try line_reader.skipUntilDelimiterOrEof('e'); // skip whitespace
-                if (!try readExpected(line_reader, "rror: ")) break :dependents;
-                line_reader.streamUntilDelimiter(std.io.null_writer, ' ', null) catch break :dependents;
-                if (!try readExpected(line_reader, "dependencies of derivation '")) break :dependents;
-                line_reader.streamUntilDelimiter(drv_list.writer(allocator), '\'', null) catch break :dependents;
-                if (!try readExpected(line_reader, " failed to build")) break :dependents;
+                _ = try line_r.discardDelimiterExclusive('e'); // skip whitespace
+                if (!try discardExpected(&line_r, "error: ")) break :dependents;
+                _ = line_r.discardDelimiterExclusive(' ') catch break :dependents;
+                if (!try discardExpected(&line_r, " dependencies of derivation '")) break :dependents;
+                _ = line_r.streamDelimiter(&drv_list.writer, '\'') catch break :dependents;
+                if (!try discardExpected(&line_r, "' failed to build")) break :dependents;
 
-                const drv = try drv_list.toOwnedSlice(allocator);
+                const drv = try drv_list.toOwnedSlice();
                 errdefer allocator.free(drv);
 
                 try dependents.put(allocator, drv, {});
@@ -293,13 +288,17 @@ pub const FailedBuilds = struct {
             .dependents = dependents_slice,
         };
     }
+
+    test {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 pub const ChildProcessDiagnostics = struct {
     term: std.process.Child.Term,
     stderr: []u8,
 
-    fn fromRunResult(result: std.process.Child.RunResult) @This() {
+    fn fromRunResult(result: std.process.RunResult) @This() {
         return .{
             .term = result.term,
             .stderr = result.stderr,
@@ -309,15 +308,18 @@ pub const ChildProcessDiagnostics = struct {
     pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
         allocator.free(self.stderr);
     }
+
+    test {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 pub const VersionError =
-    std.process.Child.RunError ||
+    std.process.RunError ||
     error{ InvalidVersion, Overflow, UnknownNixVersion };
 
-pub fn version(allocator: std.mem.Allocator) VersionError!std.SemanticVersion {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+pub fn version(allocator: std.mem.Allocator, io: std.Io) VersionError!std.SemanticVersion {
+    const result = try std.process.run(allocator, io, .{
         .argv = &.{ "nix", "eval", "--raw", "--expr", "builtins.nixVersion" },
     });
     defer {
@@ -325,7 +327,7 @@ pub fn version(allocator: std.mem.Allocator) VersionError!std.SemanticVersion {
         allocator.free(result.stderr);
     }
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         log_scoped.warn("could not get nix version:\nstdout: {s}\nstderr: {s}", .{ result.stdout, result.stderr });
         return error.UnknownNixVersion;
     }
@@ -506,10 +508,14 @@ pub const Config = struct {
 
         return self;
     }
+
+    test {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 pub const ConfigError =
-    std.process.Child.RunError ||
+    std.process.RunError ||
     std.json.ParseError(std.json.Scanner) ||
     error{CouldNotReadNixConfig};
 
@@ -519,16 +525,17 @@ pub const ConfigDiagnostics = union {
 
 pub fn config(
     allocator: std.mem.Allocator,
+    io: std.Io,
     diagnostics: ?*ConfigDiagnostics,
 ) ConfigError!std.json.Parsed(Config) {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .max_output_bytes = 100 * mem.b_per_kib,
+    const result = try std.process.run(allocator, io, .{
+        .stdout_limit = .limited(100 * mem.b_per_kib),
+        .stderr_limit = .limited(100 * mem.b_per_kib),
         .argv = &.{ "nix", "show-config", "--json" },
     });
     defer allocator.free(result.stdout);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         if (diagnostics) |d| d.* = .{ .CouldNotReadNixConfig = ChildProcessDiagnostics.fromRunResult(result) };
         return error.CouldNotReadNixConfig;
     }
@@ -716,7 +723,7 @@ pub const FlakeMetadata = struct {
                 .indirect => |input| .{
                     .scheme = "flake",
                     .path = path: {
-                        var parts = std.ArrayListUnmanaged([]const u8){};
+                        var parts = std.ArrayList([]const u8).empty;
                         defer parts.deinit(arena);
 
                         try parts.append(arena, input.id);
@@ -772,7 +779,7 @@ pub const FlakeMetadata = struct {
                 .github, .gitlab, .sourcehut => |input| .{
                     .scheme = @tagName(self),
                     .path = path: {
-                        var path = std.ArrayListUnmanaged(u8){};
+                        var path = std.ArrayList(u8).empty;
                         defer path.deinit(arena);
 
                         try path.appendSlice(arena, input.owner);
@@ -846,14 +853,14 @@ pub const FlakeMetadata = struct {
                         // would make this function also canonicalize the URL,
                         // allowing users to construct it whatever way they like.
 
-                        const gop = try query_map.getOrPut(param.key);
+                        const gop = try query_map.getOrPut(arena, param.key);
                         // Fields take precendence over the URL's query parameters.
                         if (!gop.found_existing)
                             gop.value_ptr.* = param.value;
                     }
                 }
 
-                break :query try mapToQuery(arena, &query_map.unmanaged);
+                break :query try mapToQuery(arena, &query_map);
             };
             url.query = query;
 
@@ -867,14 +874,14 @@ pub const FlakeMetadata = struct {
 
             try std.testing.expectFmt(
                 "flake:cizero",
-                "{}",
+                "{f}",
                 .{try (@This(){ .indirect = .{
                     .id = "cizero",
                 } }).toUrl(allocator)},
             );
             try std.testing.expectFmt(
                 "flake:cizero/master/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
-                "{}",
+                "{f}",
                 .{try (@This(){ .indirect = .{
                     .id = "cizero",
                     .ref = "master",
@@ -885,14 +892,14 @@ pub const FlakeMetadata = struct {
 
             try std.testing.expectFmt(
                 "path:foo",
-                "{}",
+                "{f}",
                 .{try (@This(){ .path = .{
                     .path = "foo",
                 } }).toUrl(allocator)},
             );
             try std.testing.expectFmt(
                 "path:/cizero?dir=nix&rev=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                "{}",
+                "{f}",
                 .{try (@This(){
                     .path = .{
                         .path = "/cizero",
@@ -905,7 +912,7 @@ pub const FlakeMetadata = struct {
 
             try std.testing.expectFmt(
                 "git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
-                "{}",
+                "{f}",
                 .{try (@This(){ .git = .{
                     .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                     .dir = "nix",
@@ -913,7 +920,7 @@ pub const FlakeMetadata = struct {
             );
             try std.testing.expectFmt(
                 "hg+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
-                "{}",
+                "{f}",
                 .{try (@This(){ .mercurial = .{
                     .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                     .dir = "nix",
@@ -921,7 +928,7 @@ pub const FlakeMetadata = struct {
             );
             try std.testing.expectFmt(
                 "tarball+https://example.com:42/cizero.tar.gz?dir=nix",
-                "{}",
+                "{f}",
                 .{try (@This(){ .tarball = .{
                     .url = "https://example.com:42/cizero.tar.gz",
                     .dir = "nix",
@@ -929,7 +936,7 @@ pub const FlakeMetadata = struct {
             );
             try std.testing.expectFmt(
                 "file+https://example.com:42/cizero.tar.gz?dir=nix",
-                "{}",
+                "{f}",
                 .{try (@This(){ .file = .{
                     .url = "https://example.com:42/cizero.tar.gz",
                     .dir = "nix",
@@ -938,7 +945,7 @@ pub const FlakeMetadata = struct {
 
             try std.testing.expectFmt(
                 "git+file:/cizero?shallow=1&submodules=1",
-                "{}",
+                "{f}",
                 .{try (@This(){
                     .git = .{
                         .url = "file:/cizero",
@@ -951,7 +958,7 @@ pub const FlakeMetadata = struct {
             // XXX see "XXX Skip if the `param.value` is the default."
             if (false) try std.testing.expectFmt(
                 "git+https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix",
-                "{}",
+                "{f}",
                 .{try (@This(){
                     .git = .{
                         .url = "https://example.com:42/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?submodules=1",
@@ -963,7 +970,7 @@ pub const FlakeMetadata = struct {
 
             try std.testing.expectFmt(
                 "github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                "{}",
+                "{f}",
                 .{try (@This(){ .github = .{
                     .owner = "input-output-hk",
                     .repo = "cizero",
@@ -973,7 +980,7 @@ pub const FlakeMetadata = struct {
 
             try std.testing.expectFmt(
                 "github:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com",
-                "{}",
+                "{f}",
                 .{try (@This(){ .github = .{
                     .owner = "input-output-hk",
                     .repo = "cizero",
@@ -984,7 +991,7 @@ pub const FlakeMetadata = struct {
             );
             try std.testing.expectFmt(
                 "gitlab:input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com",
-                "{}",
+                "{f}",
                 .{try (@This(){ .gitlab = .{
                     .owner = "input-output-hk",
                     .repo = "cizero",
@@ -995,7 +1002,7 @@ pub const FlakeMetadata = struct {
             );
             try std.testing.expectFmt(
                 "sourcehut:~input-output-hk/cizero/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?dir=nix&host=example.com",
-                "{}",
+                "{f}",
                 .{try (@This(){ .sourcehut = .{
                     .owner = "~input-output-hk",
                     .repo = "cizero",
@@ -1015,15 +1022,15 @@ pub const FlakeMetadata = struct {
             defer arena.deinit();
 
             var map = try structToQueryMap(arena.allocator(), strukt, fields);
-            return mapToQuery(allocator, &map.unmanaged);
+            return mapToQuery(allocator, &map);
         }
 
         fn structToQueryMap(
             arena: std.mem.Allocator,
             strukt: anytype,
             comptime fields: std.EnumSet(std.meta.FieldEnum(@TypeOf(strukt))),
-        ) std.mem.Allocator.Error!std.StringArrayHashMap([]const u8) {
-            var map = std.StringArrayHashMap([]const u8).init(arena);
+        ) std.mem.Allocator.Error!std.array_hash_map.String([]const u8) {
+            var map = std.array_hash_map.String([]const u8).empty;
 
             comptime var fields_ = fields;
             comptime if (@hasField(@TypeOf(strukt), "lastModified")) fields_.remove(.lastModified);
@@ -1036,7 +1043,7 @@ pub const FlakeMetadata = struct {
                     if (eqlFlakeUrlQueryParam(value, default_value)) comptime continue;
 
                 if (try stringifyFlakeUrlQueryParam(arena, value)) |v|
-                    try map.put(@tagName(field), v);
+                    try map.put(arena, @tagName(field), v);
             }
 
             return map;
@@ -1081,7 +1088,7 @@ pub const FlakeMetadata = struct {
         ) std.mem.Allocator.Error!std.Uri.Component {
             if (map.count() == 0) return std.Uri.Component.empty;
 
-            var query = std.ArrayListUnmanaged(u8){};
+            var query = std.ArrayList(u8).empty;
             defer query.deinit(allocator);
 
             {
@@ -1162,11 +1169,20 @@ pub const FlakeMetadata = struct {
                     else
                         try query.append(allocator, '&');
 
-                    try std.Uri.Component.percentEncode(query.writer(allocator), entry.key_ptr.*, isValidChar);
-                    if (entry.value_ptr.len != 0) {
-                        try query.append(allocator, '=');
-                        try std.Uri.Component.percentEncode(query.writer(allocator), entry.value_ptr.*, isValidChar);
-                    }
+                    var query_w = std.Io.Writer.Allocating.fromArrayList(allocator, &query);
+                    defer query = query_w.toArrayList();
+
+                    (blk: {
+                        std.Uri.Component.percentEncode(&query_w.writer, entry.key_ptr.*, isValidChar) catch |err| break :blk err;
+                        if (entry.value_ptr.len != 0) {
+                            query_w.writer.writeByte('=') catch |err| break :blk err;
+                            std.Uri.Component.percentEncode(&query_w.writer, entry.value_ptr.*, isValidChar) catch |err| break :blk err;
+                        }
+
+                        query_w.writer.flush() catch |err| break :blk err;
+                    }) catch |err| return switch (err) {
+                        error.WriteFailed => error.OutOfMemory,
+                    };
                 }
             }
 
@@ -1176,11 +1192,11 @@ pub const FlakeMetadata = struct {
         /// Writes the URL-like form suitable to be passed to `--allowed-uris`,
         /// possibly multiple variants, separated by a space character,
         /// in order to pass Nix' primitive `allowed-uris` matching in all possible cases.
-        pub fn writeAllowedUri(self: @This(), allocator: std.mem.Allocator, writer: anytype) !void {
+        pub fn writeAllowedUri(self: @This(), allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
 
-            const write_to_stream_options = std.Uri.WriteToStreamOptions{
+            const uri_format_flags = std.Uri.Format.Flags{
                 .scheme = true,
                 .authentication = true,
                 .authority = true,
@@ -1190,7 +1206,7 @@ pub const FlakeMetadata = struct {
 
             {
                 const url = try self.toUrl(arena.allocator());
-                try url.writeToStream(write_to_stream_options, writer);
+                try url.writeToStream(writer, uri_format_flags);
             }
 
             switch (self) {
@@ -1205,7 +1221,7 @@ pub const FlakeMetadata = struct {
                     try writer.writeByte(' ');
 
                     const url = try @unionInit(@This(), @tagName(tag), input).toUrl(arena.allocator());
-                    try url.writeToStream(write_to_stream_options, writer);
+                    try url.writeToStream(writer, uri_format_flags);
                 },
             }
         }
@@ -1215,12 +1231,12 @@ pub const FlakeMetadata = struct {
 
             const expectAllowedUris = struct {
                 pub fn expectAllowedUris(expected: []const u8, input: This) !void {
-                    var actual = std.ArrayList(u8).init(std.testing.allocator);
+                    var actual = std.Io.Writer.Allocating.init(std.testing.allocator);
                     defer actual.deinit();
 
-                    try input.writeAllowedUri(std.testing.allocator, actual.writer());
+                    try input.writeAllowedUri(std.testing.allocator, &actual.writer);
 
-                    try std.testing.expectEqualStrings(expected, actual.items);
+                    try std.testing.expectEqualStrings(expected, actual.written());
                 }
             }.expectAllowedUris;
 
@@ -1233,6 +1249,10 @@ pub const FlakeMetadata = struct {
                 "path:foo?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D path:foo",
                 @This(){ .path = .{ .path = "foo", .narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" } },
             );
+        }
+
+        test {
+            std.testing.refAllDecls(@This());
         }
     };
 
@@ -1306,6 +1326,10 @@ pub const FlakeMetadata = struct {
             }
         };
     };
+
+    test {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 pub const FlakeMetadataDiagnostics = union {
@@ -1313,13 +1337,15 @@ pub const FlakeMetadataDiagnostics = union {
 };
 
 pub const FlakeMetadataOptions = struct {
-    max_output_bytes: usize = 50 * mem.b_per_kib,
+    stdout_limit: std.Io.Limit = .limited(50 * mem.b_per_kib),
+    stderr_limit: std.Io.Limit = .limited(50 * mem.b_per_kib),
     refresh: bool = true,
     no_write_lock_file: bool = true,
 };
 
 pub fn flakeMetadata(
     allocator: std.mem.Allocator,
+    io: std.Io,
     flake: []const u8,
     opts: FlakeMetadataOptions,
     diagnostics: ?*FlakeMetadataDiagnostics,
@@ -1339,14 +1365,14 @@ pub fn flakeMetadata(
     });
     defer allocator.free(argv);
 
-    const result = try options.runFn(.{
-        .allocator = allocator,
-        .max_output_bytes = opts.max_output_bytes,
+    const result = try options.runFn(allocator, io, .{
         .argv = argv,
+        .stdout_limit = opts.stdout_limit,
+        .stderr_limit = opts.stderr_limit,
     });
     defer allocator.free(result.stdout);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         log_scoped.debug("could not get flake metadata {s}: {}\n{s}", .{ flake, result.term, result.stderr });
         if (diagnostics) |d| d.* = .{ .FlakeMetadataFailed = ChildProcessDiagnostics.fromRunResult(result) };
         return error.FlakeMetadataFailed; // TODO return more specific error
@@ -1362,7 +1388,8 @@ pub fn flakeMetadata(
 }
 
 pub const FlakePrefetchOptions = struct {
-    max_output_bytes: usize = 50 * mem.b_per_kib,
+    stdout_limit: std.Io.Limit = .limited(50 * mem.b_per_kib),
+    stderr_limit: std.Io.Limit = .limited(50 * mem.b_per_kib),
     refresh: bool = true,
 };
 
@@ -1373,6 +1400,7 @@ pub const FlakeMetadataLocksDiagnostics = union {
 /// This is faster than `flakeMetadata()` if you only need the contents of `flake.lock`.
 pub fn flakeMetadataLocks(
     allocator: std.mem.Allocator,
+    io: std.Io,
     flake: []const u8,
     opts: FlakePrefetchOptions,
     diagnostics: ?*FlakeMetadataLocksDiagnostics,
@@ -1394,14 +1422,14 @@ pub fn flakeMetadataLocks(
     });
     defer allocator.free(argv);
 
-    const result = try options.runFn(.{
-        .allocator = allocator,
-        .max_output_bytes = opts.max_output_bytes,
+    const result = try options.runFn(allocator, io, .{
         .argv = argv,
+        .stdout_limit = opts.stdout_limit,
+        .stderr_limit = opts.stderr_limit,
     });
     defer allocator.free(result.stdout);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         log_scoped.debug("could not prefetch flake {s}: {}\n{s}", .{ flake, result.term, result.stderr });
         if (diagnostics) |d| d.* = .{ .FlakePrefetchFailed = ChildProcessDiagnostics.fromRunResult(result) };
         return error.FlakePrefetchFailed; // TODO return more specific error
@@ -1418,12 +1446,15 @@ pub fn flakeMetadataLocks(
             const path = try std.fs.path.join(allocator, &.{ stdout_parsed.value.storePath, "flake.lock" });
             defer allocator.free(path);
 
-            break :flake_lock std.fs.openFileAbsolute(path, .{}) catch |err|
+            break :flake_lock std.Io.Dir.openFileAbsolute(io, path, .{}) catch |err|
                 return if (err == error.FileNotFound) null else err;
         };
-        defer flake_lock.close();
+        defer flake_lock.close(io);
 
-        var json_reader = std.json.reader(allocator, flake_lock.reader());
+        var flake_lock_r_buf: [1024]u8 = undefined;
+        var flake_lock_r = flake_lock.reader(io, &flake_lock_r_buf);
+
+        var json_reader = std.json.Reader.init(allocator, &flake_lock_r.interface);
         defer json_reader.deinit();
 
         break :json try std.json.parseFromTokenSource(std.json.Value, allocator, &json_reader, json_options);
@@ -1442,13 +1473,14 @@ test flakeMetadataLocks {
 
 pub fn lockFlakeRef(
     allocator: std.mem.Allocator,
+    io: std.Io,
     flake_ref: []const u8,
     opts: FlakeMetadataOptions,
     diagnostics: ?*FlakeMetadataDiagnostics,
 ) ![]const u8 {
     const flake = std.mem.sliceTo(flake_ref, '#');
 
-    const metadata = try flakeMetadata(allocator, flake, opts, diagnostics);
+    const metadata = try flakeMetadata(allocator, io, flake, opts, diagnostics);
     defer metadata.deinit();
 
     const flake_ref_locked = try std.mem.concat(allocator, u8, &.{
@@ -1533,10 +1565,14 @@ pub const StoreInfo = struct {
             .trusted = inner.trusted orelse 0 == 1,
         };
     }
+
+    test {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 pub const StoreInfoError =
-    std.process.Child.RunError ||
+    std.process.RunError ||
     std.json.ParseError(std.json.Scanner) ||
     error{CouldNotPingNixStore};
 
@@ -1546,16 +1582,16 @@ pub const StoreInfoDiagnostics = union {
 
 pub fn storeInfo(
     allocator: std.mem.Allocator,
+    io: std.Io,
     store: []const u8,
     diagnostics: ?*StoreInfoDiagnostics,
 ) StoreInfoError!std.json.Parsed(StoreInfo) {
-    const result = try options.runFn(.{
-        .allocator = allocator,
+    const result = try options.runFn(allocator, io, .{
         .argv = &.{ "nix", "store", "info", "--json", "--store", store },
     });
     defer allocator.free(result.stdout);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         if (diagnostics) |d| d.* = .{ .CouldNotPingNixStore = ChildProcessDiagnostics.fromRunResult(result) };
         return error.CouldNotPingNixStore;
     }
@@ -1565,4 +1601,8 @@ pub fn storeInfo(
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
     });
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

@@ -9,12 +9,8 @@ pub const PaddingError = error{
     /// The stream ended before the expected amount of padding could be read.
     EndOfStream,
 };
-
-pub fn ReadError(comptime Reader: type, allocates: bool) type {
-    var set = Reader.NoEofError || PaddingError;
-    if (allocates) set = set || std.mem.Allocator.Error;
-    return set;
-}
+pub const ReadError = std.Io.Reader.Error || PaddingError;
+pub const ReadAllocError = ReadError || std.mem.Allocator.Error;
 
 /// Returns the number of padding bytes.
 pub fn padding(len: usize) std.math.IntFittingRange(0, block_len) {
@@ -29,13 +25,13 @@ test padding {
 }
 
 /// Reads the padding for the given length and asserts it is all zeroes.
-pub fn readPadding(reader: anytype, len: usize) ReadError(@TypeOf(reader), false)!void {
+pub fn readPadding(reader: *std.Io.Reader, len: usize) ReadError!void {
     const padding_len = padding(len);
     if (padding_len == 0) return;
 
     var padding_buf: [block_len]u8 = undefined;
     const padding_slice = padding_buf[0..padding_len];
-    try reader.readNoEof(padding_slice);
+    try reader.readSliceAll(padding_slice);
 
     if (!std.mem.allEqual(u8, padding_slice, 0)) return error.BadPadding;
 }
@@ -43,62 +39,62 @@ pub fn readPadding(reader: anytype, len: usize) ReadError(@TypeOf(reader), false
 test readPadding {
     {
         const len = 5;
-        var stream = std.io.fixedBufferStream(&([_]u8{0} ** padding(len)));
-        try readPadding(stream.reader(), len);
+        var reader = std.Io.Reader.fixed(&([_]u8{0} ** padding(len)));
+        try readPadding(&reader, len);
 
-        try std.testing.expectError(error.EndOfStream, stream.reader().readByte());
+        try std.testing.expectError(error.EndOfStream, reader.takeByte());
     }
 
     {
-        var stream = std.io.fixedBufferStream(&[_]u8{ 0, 0, 1 });
+        var reader = std.Io.Reader.fixed(&[_]u8{ 0, 0, 1 });
 
-        try std.testing.expectError(error.BadPadding, readPadding(stream.reader(), 5));
+        try std.testing.expectError(error.BadPadding, readPadding(&reader, 5));
     }
 }
 
-pub fn writePadding(writer: anytype, len: usize) @TypeOf(writer).Error!void {
-    try writer.writeByteNTimes(0, padding(len));
+pub fn writePadding(writer: *std.Io.Writer, len: usize) std.Io.Writer.Error!void {
+    try writer.splatByteAll(0, padding(len));
 }
 
 /// Fills the buffer and discards the padding.
-pub fn readPadded(reader: anytype, buf: []u8) ReadError(@TypeOf(reader), false)!void {
-    if (try reader.readAll(buf) < buf.len) return error.EndOfStream;
+pub fn readPadded(reader: *std.Io.Reader, buf: []u8) ReadError!void {
+    try reader.readSliceAll(buf);
     try readPadding(reader, buf.len);
 }
 
 test readPadded {
     const input: []const u8 = &.{ 0, 1, 2, 3, 4, 0, 0, 0, 8, 9 };
-    var stream = std.io.fixedBufferStream(input);
+    var reader = std.Io.Reader.fixed(input);
 
     var packet: [5]u8 = undefined;
-    try readPadded(stream.reader(), &packet);
+    try readPadded(&reader, &packet);
 
     try std.testing.expectEqualStrings(input[0..packet.len], &packet);
 
     {
         var buf: [input.len - block_len]u8 = undefined;
-        try std.testing.expectEqual(buf.len, try stream.reader().readAll(&buf));
+        try reader.readSliceAll(&buf);
         try std.testing.expectEqualSlices(u8, input[block_len..], &buf);
     }
 }
 
-pub fn writePadded(writer: anytype, buf: []const u8) @TypeOf(writer).Error!void {
+pub fn writePadded(writer: *std.Io.Writer, buf: []const u8) std.Io.Writer.Error!void {
     try writer.writeAll(buf);
     try writePadding(writer, buf.len);
 }
 
-pub fn readU64(reader: anytype) ReadError(@TypeOf(reader), false)!u64 {
-    const result = try reader.readInt(u64, .little);
+pub fn readU64(reader: *std.Io.Reader) ReadError!u64 {
+    const result = try reader.takeInt(u64, .little);
     try readPadding(reader, @sizeOf(u64));
     return result;
 }
 
-pub fn writeU64(writer: anytype, value: u64) @TypeOf(writer).Error!void {
+pub fn writeU64(writer: *std.Io.Writer, value: u64) std.Io.Writer.Error!void {
     try writer.writeInt(u64, value, .little);
     try writePadding(writer, @sizeOf(u64));
 }
 
-pub fn readBool(reader: anytype) (ReadError(@TypeOf(reader), false) || error{BadBool})!bool {
+pub fn readBool(reader: *std.Io.Reader) (ReadError || error{BadBool})!bool {
     return switch (try readU64(reader)) {
         @intFromBool(false) => false,
         @intFromBool(true) => true,
@@ -106,23 +102,23 @@ pub fn readBool(reader: anytype) (ReadError(@TypeOf(reader), false) || error{Bad
     };
 }
 
-pub fn writeBool(writer: anytype, value: bool) @TypeOf(writer).Error!void {
+pub fn writeBool(writer: *std.Io.Writer, value: bool) std.Io.Writer.Error!void {
     try writeU64(writer, @intFromBool(value));
 }
 
-pub fn readPacket(allocator: std.mem.Allocator, reader: anytype) ReadError(@TypeOf(reader), true)![]const u8 {
+pub fn readPacket(allocator: std.mem.Allocator, reader: *std.Io.Reader) ReadAllocError![]const u8 {
     const buf = try allocator.alloc(u8, try readU64(reader));
     errdefer allocator.free(buf);
     try readPadded(reader, buf);
     return buf;
 }
 
-pub fn writePacket(writer: anytype, packet: []const u8) @TypeOf(writer).Error!void {
+pub fn writePacket(writer: *std.Io.Writer, packet: []const u8) std.Io.Writer.Error!void {
     try writeU64(writer, packet.len);
     try writePadded(writer, packet);
 }
 
-pub fn readPackets(allocator: std.mem.Allocator, reader: anytype) ReadError(@TypeOf(reader), true)![]const []const u8 {
+pub fn readPackets(allocator: std.mem.Allocator, reader: *std.Io.Reader) ReadAllocError![]const []const u8 {
     const bufs = try allocator.alloc([]const u8, try readU64(reader));
     errdefer {
         for (bufs) |buf| allocator.free(buf);
@@ -132,12 +128,12 @@ pub fn readPackets(allocator: std.mem.Allocator, reader: anytype) ReadError(@Typ
     return bufs;
 }
 
-pub fn writePackets(writer: anytype, packets: []const []const u8) @TypeOf(writer).Error!void {
+pub fn writePackets(writer: *std.Io.Writer, packets: []const []const u8) std.Io.Writer.Error!void {
     try writeU64(writer, packets.len);
     for (packets) |packet| try writePacket(writer, packet);
 }
 
-pub fn readStringStringMap(allocator: std.mem.Allocator, reader: anytype) (ReadError(@TypeOf(reader), true) || error{BadBool})!std.BufMap {
+pub fn readStringStringMap(allocator: std.mem.Allocator, reader: *std.Io.Reader) (ReadAllocError || error{BadBool})!std.BufMap {
     var map = std.BufMap.init(allocator);
     errdefer map.deinit();
 
@@ -156,7 +152,7 @@ pub fn readStringStringMap(allocator: std.mem.Allocator, reader: anytype) (ReadE
     return map;
 }
 
-pub fn writeStringStringMap(writer: anytype, map: std.StringHashMapUnmanaged([]const u8)) @TypeOf(writer).Error!void {
+pub fn writeStringStringMap(writer: *std.Io.Writer, map: std.StringHashMapUnmanaged([]const u8)) std.Io.Writer.Error!void {
     var iter = map.iterator();
     while (iter.next()) |entry| {
         try writeBool(writer, true);
@@ -166,7 +162,7 @@ pub fn writeStringStringMap(writer: anytype, map: std.StringHashMapUnmanaged([]c
 }
 
 /// Reads fields in declaration order.
-pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytype) (ReadError(@TypeOf(reader), true) || error{BadBool})!T {
+pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: *std.Io.Reader) (ReadAllocError || error{BadBool})!T {
     var strukt: T = undefined;
 
     const fields = @typeInfo(T).@"struct".fields;
@@ -204,12 +200,12 @@ pub fn readStruct(comptime T: type, allocator: std.mem.Allocator, reader: anytyp
 }
 
 test readStruct {
-    var serialized = std.io.fixedBufferStream(&TestStruct.default_serialized);
+    var serialized = std.Io.Reader.fixed(&TestStruct.default_serialized);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var test_struct = try readStruct(TestStruct, arena.allocator(), serialized.reader());
+    var test_struct = try readStruct(TestStruct, arena.allocator(), &serialized);
     defer test_struct.deinit();
 
     var expected = try TestStruct.default(std.testing.allocator);
@@ -222,7 +218,7 @@ test readStruct {
     try std.testing.expectEqualStrings(expected.foobar.get("foo").?, test_struct.foobar.get("foo").?);
 }
 
-pub fn writeStruct(comptime T: type, writer: anytype, value: T) (@TypeOf(writer).Error || error{BadBool})!void {
+pub fn writeStruct(comptime T: type, writer: *std.Io.Writer, value: T) (std.Io.Writer.Error || error{BadBool})!void {
     const fields = @typeInfo(T).@"struct".fields;
     inline for (fields) |field| {
         const field_value = @field(value, field.name);
@@ -245,12 +241,12 @@ test writeStruct {
     var test_struct = try TestStruct.default(std.testing.allocator);
     defer test_struct.deinit();
 
-    var serialized = std.ArrayListUnmanaged(u8){};
-    defer serialized.deinit(std.testing.allocator);
+    var serialized = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer serialized.deinit();
 
-    try writeStruct(TestStruct, serialized.writer(std.testing.allocator), test_struct);
+    try writeStruct(TestStruct, &serialized.writer, test_struct);
 
-    try std.testing.expectEqualSlices(u8, &TestStruct.default_serialized, serialized.items);
+    try std.testing.expectEqualSlices(u8, &TestStruct.default_serialized, serialized.writer.buffered());
 }
 
 const TestStruct = struct {
@@ -292,7 +288,7 @@ const TestStruct = struct {
     }
 };
 
-pub fn expectPacket(comptime expected: []const u8, reader: anytype) (ReadError(@TypeOf(reader), true) || error{UnexpectedPacket})!void {
+pub fn expectPacket(comptime expected: []const u8, reader: *std.Io.Reader) (ReadError(@TypeOf(reader), true) || error{UnexpectedPacket})!void {
     var buf: [expected.len]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
 
@@ -303,4 +299,8 @@ pub fn expectPacket(comptime expected: []const u8, reader: anytype) (ReadError(@
 
     if (!std.mem.eql(u8, packet, expected))
         return error.UnexpectedPacket;
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

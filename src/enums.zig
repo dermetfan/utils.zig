@@ -7,48 +7,42 @@ pub fn Merged(comptime enums: []const type, comptime reindex: bool) type {
         .signedness = .unsigned,
         .bits = 0,
     };
-    var fields: []const std.builtin.Type.EnumField = &.{};
-    var decls: []const std.builtin.Type.Declaration = &.{};
-    var is_exhaustive = true;
+    var mode = .exhaustive;
+    var fields_count = 0;
 
     for (enums) |e| {
         const info = @typeInfo(e).@"enum";
+        fields_count += info.fields.len;
+        if (!info.is_exhaustive) mode = .nonexhaustive;
 
-        for (info.fields) |field| {
-            var new_field = field;
-            if (reindex) new_field.value = fields.len;
-            fields = fields ++ [_]std.builtin.Type.EnumField{new_field};
-        }
-
-        for (info.decls) |decl| decls = decls ++ [_]std.builtin.Type.Declaration{decl};
-
-        if (!info.is_exhaustive) is_exhaustive = false;
-
-        {
+        if (!reindex) {
             const tag_info = @typeInfo(info.tag_type).int;
-
-            switch (tag_info.signedness) {
-                .signed => |s| tag_int.signedness = s,
-                .unsigned => {},
-            }
-
-            if (reindex)
-                tag_int = @typeInfo(std.math.IntFittingRange(0, fields.len - 1)).int
-            else
-                tag_int.bits = @max(tag_int.bits, tag_info.bits);
+            if (tag_info.signedness == .signed)
+                tag_int.signedness = .signed;
+            tag_int.bits = @max(tag_int.bits, tag_info.bits);
         }
     }
 
-    const tag_type = @Type(.{ .int = tag_int });
+    if (reindex)
+        tag_int = @typeInfo(std.math.IntFittingRange(0, fields_count - 1)).int;
 
-    if (!is_exhaustive and std.math.pow(tag_type, 2, tag_int.bits) == fields.len) is_exhaustive = true;
+    const Tag = @Int(tag_int.signedness, tag_int.bits);
 
-    return @Type(.{ .@"enum" = .{
-        .tag_type = tag_type,
-        .is_exhaustive = is_exhaustive,
-        .fields = fields,
-        .decls = decls,
-    } });
+    if (mode == .nonexhaustive and std.math.pow(Tag, 2, tag_int.bits) == fields_count) mode = .exhaustive;
+
+    var field_names: [fields_count][:0]const u8 = undefined;
+    var field_values: [fields_count]Tag = undefined;
+
+    var field_idx = 0;
+    for (enums) |e|
+        for (@typeInfo(e).@"enum".fields) |field| {
+            field_names[field_idx] = field.name;
+            field_values[field_idx] = if (reindex) field_idx else field.value;
+
+            field_idx += 1;
+        };
+
+    return @Enum(Tag, mode, &field_names, &field_values);
 }
 
 test Merged {
@@ -74,13 +68,22 @@ test Merged {
 }
 
 pub fn Sub(comptime Enum: type, comptime tags: []const Enum) type {
-    var info = @typeInfo(Enum).@"enum";
-    info.fields = &.{};
-    inline for (tags) |tag| info.fields = info.fields ++ .{std.builtin.Type.EnumField{
-        .name = @tagName(tag),
-        .value = @intFromEnum(tag),
-    }};
-    return @Type(.{ .@"enum" = info });
+    const info = @typeInfo(Enum).@"enum";
+
+    var field_names: [tags.len][:0]const u8 = undefined;
+    var field_values: [tags.len]info.tag_type = undefined;
+
+    for (&field_names, &field_values, tags) |*field_name, *field_value, tag| {
+        field_name.* = @tagName(tag);
+        field_value.* = @intFromEnum(tag);
+    }
+
+    return @Enum(
+        info.tag_type,
+        if (info.is_exhaustive) .exhaustive else .nonexhaustive,
+        &field_names,
+        &field_values,
+    );
 }
 
 test Sub {
@@ -97,12 +100,31 @@ test Sub {
 /// Raises the tag type to the next power of two
 /// if it is not a power of two already.
 pub fn EnsurePowTag(comptime E: type, min: comptime_int) type {
-    var info = @typeInfo(E).@"enum";
-    info.tag_type = meta.EnsurePowBits(info.tag_type, min);
-    return @Type(.{ .@"enum" = info });
+    const info = @typeInfo(E).@"enum";
+
+    const Tag = meta.EnsurePowBits(info.tag_type, min);
+
+    var field_names: [info.fields.len][:0]const u8 = undefined;
+    var field_values: [info.fields.len]Tag = undefined;
+
+    for (&field_names, &field_values, info.fields) |*field_name, *field_value, field| {
+        field_name.* = field.name;
+        field_value.* = field.value;
+    }
+
+    return @Enum(
+        Tag,
+        if (info.is_exhaustive) .exhaustive else .nonexhaustive,
+        &field_names,
+        &field_values,
+    );
 }
 
 test EnsurePowTag {
     try std.testing.expectEqual(u8, std.meta.Tag(EnsurePowTag(enum(u0) {}, 8)));
     try std.testing.expectEqual(u8, std.meta.Tag(EnsurePowTag(enum(u8) {}, 8)));
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

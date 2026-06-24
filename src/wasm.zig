@@ -34,3 +34,7 @@ pub fn span(memory: []u8, addr: anytype) []u8 {
     };
     return std.mem.span(@as([*c]u8, &memory[a]));
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

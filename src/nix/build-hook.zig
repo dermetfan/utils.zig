@@ -10,20 +10,20 @@ const wire = @import("wire.zig");
 const debug = @import("../debug.zig");
 const mem = @import("../mem.zig");
 
-pub fn Connection(comptime Reader: type, comptime Writer: type, comptime WriterMutex: type) type {
+pub fn Connection(WriterMutex: type) type {
     return struct {
-        reader: Reader,
-        writer: Writer,
+        reader: *std.Io.Reader,
+        writer: *std.Io.Writer,
         writer_mutex: WriterMutex,
 
-        pub fn readDerivation(self: @This(), allocator: std.mem.Allocator) (wire.ReadError(Reader, true) || error{ UnexpectedPacket, BadBool })!Derivation {
+        pub fn readDerivation(self: @This(), allocator: std.mem.Allocator) (wire.ReadAllocError || error{ UnexpectedPacket, BadBool })!Derivation {
             return (try Request.read(allocator, self.reader)).derivation;
         }
 
         /// The nix daemon will immediately kill the build hook after we decline
         /// the last derivation it offers us
         /// so make sure to clean up all resources before calling this function.
-        pub fn decline(self: @This()) Writer.Error!void {
+        pub fn decline(self: @This()) std.Io.Writer.Error!void {
             self.writer_mutex.lock();
             defer self.writer_mutex.unlock();
 
@@ -37,7 +37,7 @@ pub fn Connection(comptime Reader: type, comptime Writer: type, comptime WriterM
         /// [`worker.hook = 0`](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libstore/build/derivation-goal.cc#L1160)
         /// invokes the [destructor](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libstore/build/hook-instance.cc#L82)
         /// which sends SIGKILL [by default](https://github.com/NixOS/nix/blob/5fe2accb754249df6cb8f840330abfcf3bd26695/src/libutil/processes.cc#L54) (oof).
-        pub fn declinePermanently(self: @This()) Writer.Error!noreturn {
+        pub fn declinePermanently(self: @This()) std.Io.Writer.Error!noreturn {
             {
                 self.writer_mutex.lock();
                 defer self.writer_mutex.unlock();
@@ -51,7 +51,7 @@ pub fn Connection(comptime Reader: type, comptime Writer: type, comptime WriterM
             event.wait();
         }
 
-        pub fn postpone(self: @This()) Writer.Error!void {
+        pub fn postpone(self: @This()) std.Io.Writer.Error!void {
             self.writer_mutex.lock();
             defer self.writer_mutex.unlock();
 
@@ -63,7 +63,7 @@ pub fn Connection(comptime Reader: type, comptime Writer: type, comptime WriterM
         /// The nix daemon will start another instance of the build hook for the remaining derivations.
         ///
         /// The given store URI is displayed to the user but does not otherwise matter.
-        pub fn accept(self: *@This(), allocator: std.mem.Allocator, store_uri: []const u8) (wire.ReadError(Reader, true) || Writer.Error || error{BadBool})!BuildIo {
+        pub fn accept(self: *@This(), allocator: std.mem.Allocator, store_uri: []const u8) (wire.ReadAllocError || std.Io.Writer.Error || error{BadBool})!BuildIo {
             {
                 self.writer_mutex.lock();
                 defer self.writer_mutex.unlock();
@@ -78,21 +78,12 @@ pub fn Connection(comptime Reader: type, comptime Writer: type, comptime WriterM
 }
 
 /// Returns the nix config and a connection.
-pub fn start(allocator: std.mem.Allocator) (wire.ReadError(std.fs.File.Reader, true) || std.fs.File.Writer.Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(std.fs.File.Reader, std.fs.File.Writer, *debug.StderrMutex) } {
-    return startAdvanced(
-        allocator,
-        std.io.getStdIn().reader(),
-        std.io.getStdErr().writer(),
-        debug.getStderrMutex(),
-    );
-}
-
-pub fn startAdvanced(
+pub fn start(
     allocator: std.mem.Allocator,
-    reader: anytype,
-    writer: anytype,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     writer_mutex: anytype,
-) (wire.ReadError(@TypeOf(reader), true) || @TypeOf(writer).Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(@TypeOf(reader), @TypeOf(writer), @TypeOf(writer_mutex)) } {
+) (wire.ReadAllocError || std.Io.Writer.Error || error{ UnexpectPacket, BadBool })!struct { std.BufMap, Connection(@TypeOf(writer_mutex)) } {
     return .{
         try wire.readStringStringMap(allocator, reader),
         .{
@@ -103,7 +94,7 @@ pub fn startAdvanced(
     };
 }
 
-pub fn parseArgs(args: *std.process.ArgIterator) !log.Action.Verbosity {
+pub fn parseArgs(args: *std.process.Args.Iterator) !log.Action.Verbosity {
     var last_arg: ?[]const u8 = null;
     while (args.next()) |arg| last_arg = arg;
 
@@ -147,11 +138,11 @@ pub const BuildIo = struct {
 pub const Initialization = struct {
     nix_config: std.BufMap,
 
-    pub fn read(allocator: std.mem.Allocator, reader: anytype) @TypeOf(reader).NoEofError!@This() {
+    pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader) std.Io.Reader.ShortError!@This() {
         return .{ .nix_config = try wire.readStringStringMap(allocator, reader) };
     }
 
-    pub fn write(self: @This(), writer: anytype) @TypeOf(writer).Error!void {
+    pub fn write(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try wire.writeStringStringMap(writer, self.nix_config.hash_map.unmanaged);
     }
 };
@@ -159,12 +150,12 @@ pub const Initialization = struct {
 pub const Request = struct {
     derivation: Derivation,
 
-    pub fn read(allocator: std.mem.Allocator, reader: anytype) (wire.ReadError(@TypeOf(reader), true) || error{ UnexpectedPacket, BadBool })!@This() {
+    pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader) (wire.ReadAllocError || error{ UnexpectedPacket, BadBool })!@This() {
         try wire.expectPacket("try", reader);
         return .{ .derivation = try wire.readStruct(Derivation, allocator, reader) };
     }
 
-    pub fn write(self: @This(), writer: anytype) (@TypeOf(writer).Error || error{BadBool})!void {
+    pub fn write(self: @This(), writer: *std.Io.Writer) (std.Io.Writer.Error || error{BadBool})!void {
         try wire.writePacket(writer, "try");
         try wire.writeStruct(Derivation, writer, self.derivation);
     }
@@ -209,28 +200,34 @@ pub const Response = union((enum {
         }
     }
 
-    pub fn read(allocator: std.mem.Allocator, reader: anytype) (@TypeOf(reader).NoEofError || std.mem.Allocator.Error || error{ BadResponse, NoSpaceLeft, StreamTooLong })!@This() {
+    pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader) (std.Io.Reader.Error ||
+        std.Io.Reader.StreamDelimiterLimitError ||
+        std.mem.Allocator.Error ||
+        error{ BadResponse, NoSpaceLeft })!@This() {
         return switch (tag: {
             var head_buf: [Tag.maxHeadLen()]u8 = undefined;
-            var head_stream = std.io.fixedBufferStream(&head_buf);
+            var head_w = std.Io.Writer.fixed(&head_buf);
 
-            try reader.streamUntilDelimiter(head_stream.writer(), '\n', head_buf.len + 1);
+            // FIXME Is +1 still correct after update from Zig 0.14's `streamUntilDelimiter()`?
+            _ = try reader.streamDelimiterLimit(&head_w, '\n', .limited(head_buf.len + 1));
+            reader.toss(1);
 
             for (std.enums.values(Tag)) |tag| {
-                if (std.mem.eql(u8, head_stream.getWritten(), tag.head())) break :tag tag;
+                if (std.mem.eql(u8, head_w.buffered(), tag.head())) break :tag tag;
             } else return error.BadResponse;
         }) {
             .accept => store: {
-                var store = try std.ArrayList(u8).initCapacity(
+                var store_w = try std.Io.Writer.Allocating.initCapacity(
                     allocator,
                     // Somewhat arbitrary, should fit all stores encountered in practice.
                     2 * mem.b_per_kib,
                 );
-                errdefer store.deinit();
+                errdefer store_w.deinit();
 
-                try reader.streamUntilDelimiter(store.writer(), '\n', store.capacity);
+                _ = try reader.streamDelimiter(&store_w.writer, '\n');
+                reader.toss(1);
 
-                break :store .{ .accept = try store.toOwnedSlice() };
+                break :store .{ .accept = try store_w.toOwnedSlice() };
             },
             inline else => |tag| tag,
         };
@@ -240,19 +237,19 @@ pub const Response = union((enum {
         const allocator = std.testing.allocator;
 
         {
-            var stream = std.io.fixedBufferStream(comptime Tag.decline.head() ++ "\n");
-            try std.testing.expectEqual(.decline, try read(allocator, stream.reader()));
+            var stream = std.Io.Reader.fixed(comptime Tag.decline.head() ++ "\n");
+            try std.testing.expectEqual(.decline, try read(allocator, &stream));
         }
 
         {
-            var stream = std.io.fixedBufferStream(comptime Tag.accept.head() ++ "\ndummy://\n");
-            const response = try read(allocator, stream.reader());
+            var stream = std.Io.Reader.fixed(comptime Tag.accept.head() ++ "\ndummy://\n");
+            const response = try read(allocator, &stream);
             defer response.deinit(allocator);
             try std.testing.expectEqualDeep(@This(){ .accept = "dummy://" }, response);
         }
     }
 
-    pub fn write(self: @This(), writer: anytype) @TypeOf(writer).Error!void {
+    pub fn write(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.writeAll(std.meta.activeTag(self).head());
         try writer.writeByte('\n');
 
@@ -265,3 +262,7 @@ pub const Response = union((enum {
         }
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}
