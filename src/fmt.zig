@@ -13,25 +13,44 @@ pub fn fmtOneline(str: []const u8) std.fmt.Alt([]const u8, formatOneline) {
     return .{ .data = str };
 }
 
-const FormatJoinData = struct {
-    strs: []const []const u8,
-    sep: []const u8 = " ",
-};
+fn FormatJoin(T: type, Separator: type, fmt: []const u8, fmt_separator: []const u8) type {
+    return struct {
+        items: []const T,
+        separator: Separator,
 
-fn formatJoin(
-    data: FormatJoinData,
-    writer: *std.Io.Writer,
-) !void {
-    for (data.strs, 0..) |str, idx| {
-        if (idx != 0) try writer.writeAll(data.sep);
-        try writer.writeAll(str);
-    }
+        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+            for (self.items, 0..) |item, idx| {
+                if (idx != 0) try writer.print(fmt_separator, .{self.separator});
+                try writer.print(fmt, .{item});
+            }
+        }
+    };
 }
 
-/// Formats strings by simply printing them separated by a separator.
-/// Useful if you don't want the `{a, b}` style for slices of strings with `{s}`.
-pub fn fmtJoin(sep: []const u8, strs: []const []const u8) std.fmt.Alt(FormatJoinData, formatJoin) {
-    return .{ .data = .{ .sep = sep, .strs = strs } };
+pub fn fmtJoin(
+    comptime T: type,
+    comptime Separator: type,
+    comptime fmt: []const u8,
+    comptime fmt_separator: []const u8,
+    items: []const T,
+    separator: Separator,
+) FormatJoin(T, Separator, fmt, fmt_separator) {
+    return .{ .items = items, .separator = separator };
+}
+
+test fmtJoin {
+    try std.testing.expectFmt("(a),(b)", "{f}", .{fmtJoin(u8, u8, "({c})", "{c}", "ab", ',')});
+}
+
+pub fn fmtJoinSepStr(comptime T: type, comptime fmt: []const u8, items: []const T, separator: []const u8) FormatJoin(T, []const u8, fmt, "{s}") {
+    return .{
+        .items = items,
+        .separator = separator,
+    };
+}
+
+test fmtJoinSepStr {
+    try std.testing.expectFmt("(a), (b)", "{f}", .{fmtJoinSepStr(u8, "({c})", "ab", ", ")});
 }
 
 fn formatSourceLocation(src: std.builtin.SourceLocation, writer: *std.Io.Writer) !void {
