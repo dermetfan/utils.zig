@@ -64,6 +64,29 @@ pub fn fmtSourceLocation(src: std.builtin.SourceLocation) std.fmt.Alt(std.builti
     return .{ .data = src };
 }
 
+fn FormatIterator(Iterator: type, fmt: []const u8) type {
+    return struct {
+        iterator: *Iterator,
+
+        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+            while (if (@typeInfo(@typeInfo(@TypeOf(Iterator.next)).@"fn".return_type.?) == .error_set)
+                try self.iterator.next()
+            else
+                self.iterator.next()) |item|
+                try writer.print(fmt, .{item});
+        }
+    };
+}
+
+pub fn fmtIterator(comptime I: type, comptime fmt: []const u8, iterator: *I) FormatIterator(I, fmt) {
+    return .{ .iterator = iterator };
+}
+
+test fmtIterator {
+    var iter = std.mem.splitScalar(u8, "a b c", ' ');
+    try std.testing.expectFmt("(a)(b)(c)", "{f}", .{fmtIterator(@TypeOf(iter), "({s})", &iter)});
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
