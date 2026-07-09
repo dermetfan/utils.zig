@@ -368,6 +368,8 @@ pub fn SubStruct(comptime T: type, comptime fields: std.enums.EnumSet(std.meta.F
     var fields_iter = fields.iterator();
     var field_idx = 0;
     while (fields_iter.next()) |field| {
+        defer field_idx += 1;
+
         const field_info = std.meta.fieldInfo(T, field);
 
         field_names[field_idx] = field_info.name;
@@ -377,8 +379,6 @@ pub fn SubStruct(comptime T: type, comptime fields: std.enums.EnumSet(std.meta.F
             .@"align" = field_info.alignment,
             .default_value_ptr = field_info.default_value_ptr,
         };
-
-        field_idx += 1;
     }
 
     return @Struct(info.layout, info.backing_integer, &field_names, &field_types, &field_attrs);

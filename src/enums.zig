@@ -67,15 +67,19 @@ test Merged {
     }
 }
 
-pub fn Sub(comptime Enum: type, comptime tags: []const Enum) type {
+pub fn Sub(Enum: type, tags: std.enums.EnumSet(Enum)) type {
     const info = @typeInfo(Enum).@"enum";
 
-    var field_names: [tags.len][:0]const u8 = undefined;
-    var field_values: [tags.len]info.tag_type = undefined;
+    var field_names: [tags.count()][:0]const u8 = undefined;
+    var field_values: [tags.count()]info.tag_type = undefined;
 
-    for (&field_names, &field_values, tags) |*field_name, *field_value, tag| {
-        field_name.* = @tagName(tag);
-        field_value.* = @intFromEnum(tag);
+    var tags_iter = tags.iterator();
+    var field_idx = 0;
+    while (tags_iter.next()) |tag| {
+        defer field_idx += 1;
+
+        field_names[field_idx] = @tagName(tag);
+        field_values[field_idx] = @intFromEnum(tag);
     }
 
     return @Enum(
@@ -88,7 +92,7 @@ pub fn Sub(comptime Enum: type, comptime tags: []const Enum) type {
 
 test Sub {
     const E1 = enum { a, b, c };
-    const E2 = Sub(E1, &.{ .a, .c });
+    const E2 = Sub(E1, .initMany(&.{ .a, .c }));
 
     const e2_tags = std.meta.tags(E2);
 
