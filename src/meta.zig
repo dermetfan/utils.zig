@@ -551,7 +551,45 @@ test EnsurePowBits {
     try std.testing.expectEqual(u8, EnsurePowBits(u8, 8));
 }
 
-pub fn ErrorSetExcluding(comptime ErrorSet: type, comptime excluded: ErrorSet) type {
+pub fn eqlErrorSets(A: type, B: type) bool {
+    if (A == B) return true;
+
+    const as = std.meta.tags(A);
+    const bs = std.meta.tags(B);
+
+    if (as.len != bs.len) return false;
+
+    for (as, bs) |a, b|
+        if (a != b) return false;
+    return true;
+}
+
+test eqlErrorSets {
+    try std.testing.expect(eqlErrorSets(error{}, error{}));
+    try std.testing.expect(eqlErrorSets(error{A}, error{A}));
+    try std.testing.expect(eqlErrorSets(error{ A, B }, error{ A, B }));
+    try std.testing.expect(eqlErrorSets(error{ A, B }, error{ B, A }));
+
+    try std.testing.expect(!eqlErrorSets(error{}, error{A}));
+    try std.testing.expect(!eqlErrorSets(error{A}, error{ A, B }));
+    try std.testing.expect(!eqlErrorSets(error{A}, error{B}));
+}
+
+pub fn errorSetContains(ErrorSet: type, err: anyerror) bool {
+    inline for (@typeInfo(ErrorSet).error_set.?) |member|
+        if (@field(ErrorSet, member.name) == err) return true;
+    return false;
+}
+
+test errorSetContains {
+    const E = error{ A, B };
+
+    try std.testing.expect(errorSetContains(E, error.A));
+    try std.testing.expect(errorSetContains(E, error.B));
+    try std.testing.expect(!errorSetContains(E, error.C));
+}
+
+pub fn ErrorSetExcluding(ErrorSet: type, excluded: ErrorSet) type {
     const Foo = struct {
         fn throw() ErrorSet!void {}
 
@@ -567,13 +605,41 @@ pub fn ErrorSetExcluding(comptime ErrorSet: type, comptime excluded: ErrorSet) t
 }
 
 test ErrorSetExcluding {
-    const E1 = error{ A, B, C };
-    const E2 = ErrorSetExcluding(E1, error.B);
+    try std.testing.expect(eqlErrorSets(error{ A, C }, ErrorSetExcluding(error{ A, B, C }, error.B)));
+}
 
-    const e2_tags = std.meta.tags(E2);
+pub fn SubErrorSet(ErrorSet: type, ExcludedErrorSet: type) type {
+    if (ErrorSet == ExcludedErrorSet) return error{};
 
-    try std.testing.expectEqual(2, e2_tags.len);
-    try std.testing.expectEqualSlices(E2, &.{ error.A, error.C }, e2_tags);
+    const excluded = std.meta.tags(ExcludedErrorSet);
+
+    // not needed but hopefully saves comptime branches
+    switch (excluded.len) {
+        0 => return ErrorSet,
+        1 => return ErrorSetExcluding(ErrorSet, excluded[0]),
+        else => {},
+    }
+
+    var steps: [excluded.len + 1]type = undefined;
+    steps[0] = ErrorSet;
+    for (steps[0 .. steps.len - 1], steps[1..], excluded) |prev, *curr, tag|
+        curr.* = if (errorSetContains(ErrorSet, tag))
+            ErrorSetExcluding(prev, @errorCast(tag))
+        else
+            prev;
+
+    return steps[steps.len - 1];
+}
+
+test SubErrorSet {
+    const E = error{ A, B, C };
+
+    try std.testing.expect(eqlErrorSets(error{ A, C }, SubErrorSet(E, error{ B, D })));
+    try std.testing.expect(eqlErrorSets(error{C}, SubErrorSet(E, error{ A, B, D })));
+
+    try std.testing.expectEqual(E, SubErrorSet(E, error{}));
+    try std.testing.expectEqual(error{}, SubErrorSet(error{}, E));
+    try std.testing.expectEqual(error{}, SubErrorSet(E, E));
 }
 
 pub fn FnErrorSet(comptime Fn: type) type {
