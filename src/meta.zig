@@ -423,7 +423,10 @@ pub fn MapFields(comptime T: type, map: fn (FieldInfo(T)) FieldInfo(T)) type {
                 };
             }
 
-            break :blk @Struct(info.layout, info.backing_integer, &field_names, &field_types, &field_attrs);
+            break :blk if (info.is_tuple)
+                @Tuple(&field_types)
+            else
+                @Struct(info.layout, info.backing_integer, &field_names, &field_types, &field_attrs);
         },
         .@"enum" => |info| blk: {
             var field_names: [info.fields.len][:0]const u8 = undefined;
